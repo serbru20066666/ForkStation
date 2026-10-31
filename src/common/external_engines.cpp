@@ -26,6 +26,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <tlhelp32.h>
 #pragma comment(lib, "gdi32.lib")
 #endif
 
@@ -638,8 +639,87 @@ BOOL CALLBACK FindNewWindow(HWND hwnd, LPARAM param) {
 
 /// Starts the program in a job, shows the splash until it shows a window, then waits for the job
 /// (the program and everything it started) to end.
+/// Whether RetroBat started this process (its parent is RetroBat's emulatorLauncher.exe).
+bool LaunchedFromRetroBat() {
+    const DWORD own = GetCurrentProcessId();
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    DWORD parent = 0;
+    for (BOOL ok = Process32FirstW(snapshot, &entry); ok; ok = Process32NextW(snapshot, &entry)) {
+        if (entry.th32ProcessID == own) {
+            parent = entry.th32ParentProcessID;
+            break;
+        }
+    }
+    bool retrobat = false;
+    entry.dwSize = sizeof(entry);
+    for (BOOL ok = Process32FirstW(snapshot, &entry); parent && ok;
+         ok = Process32NextW(snapshot, &entry)) {
+        if (entry.th32ProcessID == parent) {
+            retrobat = _wcsicmp(entry.szExeFile, L"emulatorLauncher.exe") == 0;
+            break;
+        }
+    }
+    CloseHandle(snapshot);
+    return retrobat;
+}
+
+/// Reads the controllers while the game runs; true once Select (Share) and Start (Options) have
+/// been held together for a moment on any of them.
+class PadExitWatch {
+public:
+    PadExitWatch() {
+        // The game's window has the focus: read the controllers anyway, and leave their lights alone.
+        SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+        SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_PLAYER_LED, "0");
+        ready = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+    }
+    ~PadExitWatch() {
+        for (auto& [id, pad] : pads) {
+            SDL_CloseGamepad(pad);
+        }
+        if (ready) {
+            SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+        }
+    }
+    bool Pressed() {
+        if (!ready) {
+            return false;
+        }
+        SDL_PumpEvents();
+        SDL_UpdateGamepads();
+        int count = 0;
+        if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
+            for (int i = 0; i < count; ++i) {
+                if (!pads.contains(ids[i])) {
+                    if (SDL_Gamepad* pad = SDL_OpenGamepad(ids[i])) {
+                        pads[ids[i]] = pad;
+                    }
+                }
+            }
+            SDL_free(ids);
+        }
+        bool both = false;
+        for (auto& [id, pad] : pads) {
+            both |= SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_BACK) &&
+                    SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START);
+        }
+        held = both ? held + 1 : 0;
+        return held >= 6; // about 0.3 s at one check every 50 ms
+    }
+
+private:
+    bool ready = false;
+    int held = 0;
+    std::map<SDL_JoystickID, SDL_Gamepad*> pads;
+};
+
 bool StartAndWait(const std::filesystem::path& program, const std::vector<std::string>& args,
-                  const std::string& title, const std::string& engine_name) {
+                  const std::string& title, const std::string& engine_name, bool pad_exit) {
     ApplyEnvFile(program.parent_path());
     std::wstring cmdline = L"\"" + program.wstring() + L"\"";
     for (const auto& arg : args) {
@@ -700,7 +780,21 @@ bool StartAndWait(const std::filesystem::path& program, const std::vector<std::s
         Sleep(100);
     }
     splash.Close();
-    // Stay until the game ends: front ends such as RetroBat wait for this process.
+    // Stay until the game ends: front ends such as RetroBat wait for this process. Started by
+    // RetroBat, Select + Start ends the game and goes back to it (RetroBat's own Select + Start
+    // asks this process's window to close, and the game's window belongs to the other program).
+    if (pad_exit && job) {
+        LOG_INFO(Common, "Started by RetroBat: Select + Start ends the game");
+        PadExitWatch watch;
+        while (running()) {
+            if (watch.Pressed()) {
+                LOG_INFO(Common, "Select + Start: ending the game");
+                TerminateJobObject(job, 0);
+                break;
+            }
+            Sleep(50);
+        }
+    }
     while (running()) {
         Sleep(500);
     }
@@ -1931,7 +2025,8 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
     SyncGameSaves(serial, program_folder);
 #ifdef _WIN32
     const bool success =
-        StartAndWait(program, args, title.empty() ? serial : title, EngineName(engine, program));
+        StartAndWait(program, args, title.empty() ? serial : title, EngineName(engine, program),
+                     engine.kind == "kyty-astro" && LaunchedFromRetroBat());
     SyncGameSaves(serial, program_folder);
     return success;
 #else
