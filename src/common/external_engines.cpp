@@ -235,7 +235,7 @@ std::string EngineName(const Engine& engine, const std::filesystem::path& progra
         return "shadPS4";
     }
     if (engine.kind == "kyty-astro") {
-        return "KytyPS5 Astro (biggsymobile)";
+        return "KytyPS5 Astro";
     }
     return FS::PathToUTF8String(program.stem());
 }
@@ -1395,6 +1395,9 @@ std::optional<ExternalEngineCard> DescribeExternalEngine(const std::string& seri
     card.installed = exists;
     if (exists) {
         card.version = EngineVersion(program);
+        if (engine.kind == "kyty-astro" && card.version.rfind('-') != std::string::npos) {
+            card.version = card.version.substr(card.version.rfind('-') + 1); // "...-int21-23v": 23v
+        }
         card.engine =
             EngineName(engine, program) + (card.version.empty() ? "" : " " + card.version);
         if (engine.kind == "spartanport" || engine.kind == "issn" || engine.kind == "bloodborne") {
@@ -1405,8 +1408,8 @@ std::optional<ExternalEngineCard> DescribeExternalEngine(const std::string& seri
             card.details = ReleaseBuildDetails(program.parent_path());
         } else if (engine.kind == "kyty-astro") {
             card.details[0] = "Pantalla: " + ExternalEngineResolution(serial);
-            card.details[1] = "Render 2432x1368 + FSR 3.1 a 4K";
-            card.details[2] = "45 fps reales + generación FSR (90 en pantalla)";
+            card.details[1] = "Render 1368p + FSR 3.1";
+            card.details[2] = "45 fps + generación (90)";
         } else {
             card.details[0] = "Ajustes: en su propio programa";
         }
