@@ -527,8 +527,23 @@ void SetGameIcons(std::vector<IconInfo>& gameIcons, int& settingsFor, int& sugge
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     float rowWidth = 0.0f;
 
+    // With PS5 games in the list, each console gets its own section with a heading.
+    const bool sections = std::ranges::any_of(gameIcons, &IconInfo::ps5);
     for (int i = 0; i < gameIcons.size(); i++) {
-        if (i > 0) {
+        if (sections && (i == 0 || gameIcons[i].ps5 != gameIcons[i - 1].ps5)) {
+            if (i > 0) {
+                ImGui::Dummy(ImVec2(0.0f, gap * 1.5f));
+            }
+            ImGui::SetWindowFontScale(uiScale * 1.15f);
+            ImGui::TextUnformatted(gameIcons[i].ps5 ? "PlayStation 5" : "PlayStation 4");
+            ImGui::SetWindowFontScale(uiScale);
+            const ImVec2 under = ImGui::GetCursorScreenPos();
+            draw_list->AddLine({under.x, under.y + 2.0f * uiScale},
+                               {under.x + maxAvailableWidth, under.y + 2.0f * uiScale},
+                               ImGui::GetColorU32(Theme::Chip), 2.0f * uiScale);
+            ImGui::Dummy(ImVec2(0.0f, 10.0f * uiScale));
+            rowWidth = 0.0f;
+        } else if (i > 0) {
             // Use same line if the next card fits, move to the next row if not
             if (rowWidth + gap + card.x <= maxAvailableWidth) {
                 ImGui::SameLine(0.0f, gap);
@@ -757,6 +772,7 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
                     // A PS5 game: listed only when a program in motores runs it.
                     icon.title = ps5->title;
                     icon.serial = ps5->serial;
+                    icon.ps5 = true;
                 } else {
                     continue;
                 }
@@ -779,6 +795,9 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
     }
 
     std::sort(icons.begin(), icons.end(), [](const IconInfo& a, const IconInfo& b) {
+        if (a.ps5 != b.ps5) {
+            return !a.ps5; // PS4 games first, then the PS5 section
+        }
         return a.title < b.title; // Alphabetical order
     });
     KeepSingleGame(icons);

@@ -25,6 +25,8 @@ struct IconInfo {
     std::array<std::string, 7> details;
     /// Runs on another program (motores.ini): its settings are that program's, not this one's.
     bool external{};
+    /// A PS5 game (sce_sys/param.json): listed in its own section after the PS4 games.
+    bool ps5{};
 };
 
 void Launch(char* executableName, bool sameProcess);
