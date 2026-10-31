@@ -23,6 +23,7 @@
 #include "common/path_util.h"
 #include "common/scm_rev.h"
 #include "common/thread.h"
+#include "core/file_sys/ifile.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -103,6 +104,8 @@ std::map<std::string, Engine> LoadTable(const std::filesystem::path& folder) {
     ParseLine(
         R"(PPSA01325,PPSA21564,PPSA21567,PPSA21568 = kyty-astro | motores\AstroBot\kyty_emulator.exe)",
         table);
+    ParseLine(R"(PPSA01342,PPSA01341,PPSA01340 = kyty-souls | motores\DemonsSouls\kyty_emulator.exe)",
+              table);
     std::ifstream in{folder / "motores.ini"};
     std::string line;
     while (in && std::getline(in, line)) {
@@ -237,6 +240,9 @@ std::string EngineName(const Engine& engine, const std::filesystem::path& progra
     }
     if (engine.kind == "kyty-astro") {
         return "KytyPS5 Astro";
+    }
+    if (engine.kind == "kyty-souls") {
+        return "KytyPS5 Demon's Souls";
     }
     return FS::PathToUTF8String(program.stem());
 }
@@ -719,8 +725,9 @@ private:
 };
 
 bool StartAndWait(const std::filesystem::path& program, const std::vector<std::string>& args,
-                  const std::string& title, const std::string& engine_name, bool pad_exit) {
-    ApplyEnvFile(program.parent_path());
+                  const std::string& title, const std::string& engine_name, bool pad_exit,
+                  const std::filesystem::path& work_folder) {
+    ApplyEnvFile(work_folder);
     std::wstring cmdline = L"\"" + program.wstring() + L"\"";
     for (const auto& arg : args) {
         cmdline += L" \"" + std::filesystem::path{arg}.wstring() + L"\"";
@@ -738,7 +745,7 @@ bool StartAndWait(const std::filesystem::path& program, const std::vector<std::s
     PROCESS_INFORMATION pi{};
     FILETIME started;
     GetSystemTimeAsFileTime(&started);
-    const std::wstring folder = program.parent_path().wstring();
+    const std::wstring folder = work_folder.wstring();
     if (!CreateProcessW(program.c_str(), cmdline.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED,
                         nullptr, folder.c_str(), &si, &pi)) {
         LOG_ERROR(Common, "Could not start {}: error {}", FS::PathToUTF8String(program),
@@ -1367,12 +1374,15 @@ bool ExtractZipArchive(const std::filesystem::path& zip_path,
 } // namespace
 
 std::optional<Ps5GameInfo> ReadPs5GameInfo(const std::filesystem::path& game_folder) {
-    std::error_code ec;
-    const auto path = game_folder / "sce_sys" / "param.json";
-    if (!std::filesystem::exists(path, ec)) {
+    // A folder or a ZArchive (.zar) of one.
+    const auto data = Core::FileSys::ReadGameFile(game_folder, "sce_sys/param.json");
+    if (!data) {
         return std::nullopt;
     }
-    const auto param = ReadJsonFile(path);
+    auto param = nlohmann::json::parse(data->begin(), data->end(), nullptr, false);
+    if (!param.is_object()) {
+        return std::nullopt;
+    }
     Ps5GameInfo info;
     info.serial = param.value("titleId", std::string{});
     if (info.serial.empty()) {
@@ -1417,7 +1427,7 @@ std::string ExternalEngineResolution(const std::string& serial) {
         const auto res = ReadKeyValue(folder / "bbport.ini", "output_res");
         return res == "3840x2160" ? "4K" : res == "2560x1440" ? "1440p" : "1080p";
     }
-    if (engine.kind == "kyty-astro") {
+    if (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") {
         const auto res = ReadKeyValue(folder / "brunoshadps4-kyty.ini", "pantalla");
         return res == "1440p" ? "1440p" : res == "1080p" ? "1080p" : "4K";
     }
@@ -1450,7 +1460,7 @@ std::string CycleExternalEngineResolution(const std::string& serial) {
                     next == "4K"      ? "2160"
                     : next == "1440p" ? "1440"
                                       : "1080");
-    } else if (engine.kind == "kyty-astro") {
+    } else if (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") {
         SetKeyValue(folder / "brunoshadps4-kyty.ini", "pantalla", next);
     } else if (engine.kind == "spartanport") {
         const auto ini = folder / "spartanport.ini";
@@ -1504,6 +1514,9 @@ std::optional<ExternalEngineCard> DescribeExternalEngine(const std::string& seri
             card.details[0] = "Pantalla: " + ExternalEngineResolution(serial);
             card.details[1] = "Render 1368p + FSR 3.1";
             card.details[2] = "45 fps + generación (90)";
+        } else if (engine.kind == "kyty-souls") {
+            card.details[0] = "Pantalla: " + ExternalEngineResolution(serial);
+            card.details[1] = "Ajustes de su run-windows.json";
         } else {
             card.details[0] = "Ajustes: en su propio programa";
         }
@@ -2015,6 +2028,33 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
                 "--skip-notice-screen",
                 "true"};
         // No --amd-cpu: the emulator turns its AMD-instruction patch on by itself on Intel CPUs.
+    } else if (engine.kind == "kyty-souls") {
+        // Bruno's Demon's Souls build starts through its run-windows.ps1 (the switches of its
+        // run-windows.json); the game is the folder or its .zar.
+        const auto choice =
+            ChooseResolution(title.empty() ? serial : title, ExternalEngineResolution(serial));
+        if (!choice) {
+            return WentBack(serial);
+        }
+        SetKeyValue(program_folder / "brunoshadps4-kyty.ini", "pantalla", *choice);
+        const std::string width = *choice == "4K" ? "3840" : *choice == "1440p" ? "2560" : "1920";
+        const std::string height = *choice == "4K" ? "2160" : *choice == "1440p" ? "1440" : "1080";
+        args = {"-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-File",
+                FS::PathToUTF8String(program_folder / "run-windows.ps1"),
+                "-Game",
+                FS::PathToUTF8String(eboot.parent_path()),
+                "-Width",
+                width,
+                "-Height",
+                height,
+                "-Fullscreen",
+                "-Language",
+                "3"};
     } else if (engine.kind == "shadps4") {
         args = {"--game", FS::PathToUTF8String(eboot)};
     } else {
@@ -2024,9 +2064,18 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
     LOG_INFO(Common, "{} runs on {} ({})", serial, FS::PathToUTF8String(program), engine.kind);
     SyncGameSaves(serial, program_folder);
 #ifdef _WIN32
+    // kyty-souls starts through PowerShell; the job still holds the emulator it starts.
+    std::filesystem::path run = program;
+    if (engine.kind == "kyty-souls") {
+        wchar_t system[MAX_PATH]{};
+        GetSystemDirectoryW(system, MAX_PATH);
+        run = std::filesystem::path{system} / "WindowsPowerShell" / "v1.0" / "powershell.exe";
+    }
     const bool success =
-        StartAndWait(program, args, title.empty() ? serial : title, EngineName(engine, program),
-                     engine.kind == "kyty-astro" && LaunchedFromRetroBat());
+        StartAndWait(run, args, title.empty() ? serial : title, EngineName(engine, program),
+                     (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") &&
+                         LaunchedFromRetroBat(),
+                     program_folder);
     SyncGameSaves(serial, program_folder);
     return success;
 #else
