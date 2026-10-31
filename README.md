@@ -78,6 +78,7 @@ Algunos juegos funcionan mejor en un port o un fork hecho solo para ellos. bruno
 | inFAMOUS Second Son | build de shadPS4 para inFAMOUS | [axylpup/shadPS4](https://github.com/axylpup/shadPS4) |
 | Uncharted: The Nathan Drake Collection | Uncharted PC port | [bc160201983/Uncharted-The-Nathan-Drake-Collection-PC-port](https://github.com/bc160201983/Uncharted-The-Nathan-Drake-Collection-PC-port) |
 | Bloodborne | bloodborne_pc | [Supermedo/bloodborne_pc](https://github.com/Supermedo/bloodborne_pc) |
+| ASTRO's PLAYROOM y ASTRO BOT (PS5) | KytyPS5 Astro (FSR 3.1 + generación de cuadros) | [biggsymobile-png/KytyPS5](https://github.com/biggsymobile-png/KytyPS5) |
 | The Order: 1886 y el resto | brunoShadPs4 | este repositorio |
 
 Todos son de código abierto (GPL-2.0) y el mérito de cada uno es de sus autores. No vienen incluidos: descárgalos de sus páginas y descomprímelos en una carpeta `motores` junto a `shadPS4.exe`:
@@ -89,16 +90,18 @@ motores\SpartanPort\SpartanPort.exe
 motores\inFamous\shadPS4.exe
 motores\Uncharted\Uncharted Launcher.exe
 motores\Bloodborne\Bloodborne.exe
+motores\AstroBot\kyty_emulator.exe
 ```
 
 * **Elección con el mando antes de jugar**: una pantalla para elegir la resolución (1080p, 1440p o 4K) con la cruceta, X para jugar y O para volver; en Uncharted, primero el juego de la colección. El resto de ajustes se ponen en lo que da más calidad y fps a cada port: pantalla completa, la mayor velocidad estable y el idioma en español.
 * **En el lanzador**, cada tarjeta muestra el motor asociado, su versión instalada y un botón **Actualizar** para descargar e instalar automáticamente los últimos releases oficiales directamente desde GitHub respetando tus partidas y configuraciones. Los Ajustes del lanzador siguen disponibles para los juegos del motor propio.
 * **Con RetroBat** (u otro frontend): basta con poner este `shadPS4.exe` como emulador de PS4. El programa espera a que termines de jugar, así que Select + Start cierra el juego entero, port incluido.
+* **Juegos de PS5 (ASTRO's PLAYROOM, ASTRO BOT)**: aparecen en la lista cuando su motor está en `motores\AstroBot` (su carpeta con `sce_sys\param.json`, como la de cualquier juego). Se juegan con render 2432x1368, FSR 3.1 a 4K y generación de cuadros FSR, con el juego a 45 fps reales (90 en pantalla): medido en una RX 6800 XT, a 60 los cuadros saltan entre 16,7 y 33 ms unas 60 veces por minuto (igual a 1080p, el límite es la CPU emulada), y a 45 quedan fijos en 22,2 ms. Los ajustes se escriben en el `u59-preset.json` del motor en cada arranque.
 * **inFAMOUS Second Son**: de unos 32 fps con el motor anterior a unos 85 fps con el de axylpup, en la misma partida y el mismo sitio.
 
 <img alt="inFAMOUS Second Son antes y después" src="documents/Screenshots/brunoShadPs4_infamous_antes_despues.jpg" width="800" />
 
-`motores.ini` permite cambiar el programa de cada juego, una línea por juego: `CUSA01623,CUSA01715 = spartanport | motores\SpartanPort\SpartanPort.exe`. Tipos: `spartanport`, `bloodborne`, `uncharted`, `shadps4-release`, `shadps4` (`--game`) e `interno` (el motor propio). Junto a cada programa, un `brunoshadps4.env` con líneas `NOMBRE=valor` le pasa variables de entorno.
+`motores.ini` permite cambiar el programa de cada juego, una línea por juego: `CUSA01623,CUSA01715 = spartanport | motores\SpartanPort\SpartanPort.exe`. Tipos: `spartanport`, `bloodborne`, `uncharted`, `kyty-astro`, `shadps4-release`, `shadps4` (`--game`) e `interno` (el motor propio). Junto a cada programa, un `brunoshadps4.env` con líneas `NOMBRE=valor` le pasa variables de entorno.
 
 ### Cómo usarlo
 

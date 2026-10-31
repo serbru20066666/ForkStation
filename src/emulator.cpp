@@ -441,6 +441,16 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         }
     }
 
+    // PS5 games (sce_sys/param.json) only run on another program (motores.ini).
+    bool is_ps5 = false;
+    if (!param_sfo_exists) {
+        if (const auto ps5 = Common::ReadPs5GameInfo(game_folder)) {
+            is_ps5 = true;
+            id = ps5->serial;
+            title = ps5->title;
+        }
+    }
+
     // Games that run better on another program (motores.ini): started there; this process waits
     // until the game ends (front ends wait for it) and counts the time played.
     start_time = std::chrono::steady_clock::now();
@@ -450,6 +460,13 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
         std::_Exit(0);
     }
     start_time = {};
+    if (is_ps5) {
+        LOG_CRITICAL(Loader,
+                     "{} is a PS5 game: it needs its program in motores (motores.ini), and it is "
+                     "not there",
+                     id);
+        return;
+    }
 
     EmulatorSettings.Load(id);
     // Switch to configured log

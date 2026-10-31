@@ -99,6 +99,9 @@ std::map<std::string, Engine> LoadTable(const std::filesystem::path& folder) {
     ParseLine(
         R"(CUSA03173,CUSA00900,CUSA00207,CUSA00208,CUSA01363,CUSA03023 = bloodborne | motores\Bloodborne\Bloodborne.exe)",
         table);
+    ParseLine(
+        R"(PPSA01325,PPSA21564,PPSA21567,PPSA21568 = kyty-astro | motores\AstroBot\kyty_emulator.exe)",
+        table);
     std::ifstream in{folder / "motores.ini"};
     std::string line;
     while (in && std::getline(in, line)) {
@@ -231,6 +234,9 @@ std::string EngineName(const Engine& engine, const std::filesystem::path& progra
     if (engine.kind == "shadps4-release") {
         return "shadPS4";
     }
+    if (engine.kind == "kyty-astro") {
+        return "KytyPS5 Astro (biggsymobile)";
+    }
     return FS::PathToUTF8String(program.stem());
 }
 
@@ -249,6 +255,9 @@ std::string EngineGitHubRepo(const Engine& engine, const std::filesystem::path& 
     }
     if (engine.kind == "bloodborne") {
         return "Supermedo/bloodborne_pc";
+    }
+    if (engine.kind == "kyty-astro") {
+        return "biggsymobile-png/KytyPS5";
     }
     if (engine.kind == "shadps4") {
         const auto lower = ToLower(FS::PathToUTF8String(program));
@@ -344,6 +353,13 @@ std::string InspectExecutableVersion(const std::filesystem::path& program) {
 /// name.
 std::string EngineVersion(const std::filesystem::path& program) {
     const auto folder = program.parent_path();
+    // KytyPS5 Astro builds are tagged like "astrobot-dlss-int21-23w": the tag is the version.
+    if (ToLower(FS::PathToUTF8String(program.filename())) == "kyty_emulator.exe") {
+        std::ifstream in{folder / "VERSION"};
+        std::string line;
+        std::getline(in, line);
+        return Trim(line);
+    }
     static const std::regex version{R"((\d+\.\d+(?:\.\d+)*))"};
     for (const char* name : {"VERSION", "README-Windows.txt", "README.txt"}) {
         std::ifstream in{folder / name};
@@ -1156,6 +1172,10 @@ bool ExtractZipArchive(const std::filesystem::path& zip_path,
         "shadps4-flags-user.txt",
         "shadps4-game.txt",
         "brunoshadps4.env",
+        "brunoshadps4-kyty.ini",
+        "_savedata",
+        "_pipelinecache",
+        "kyty.ini",
         "motores.ini",
         "juego.ini",
     };
@@ -1252,6 +1272,37 @@ bool ExtractZipArchive(const std::filesystem::path& zip_path,
 
 } // namespace
 
+std::optional<Ps5GameInfo> ReadPs5GameInfo(const std::filesystem::path& game_folder) {
+    std::error_code ec;
+    const auto path = game_folder / "sce_sys" / "param.json";
+    if (!std::filesystem::exists(path, ec)) {
+        return std::nullopt;
+    }
+    const auto param = ReadJsonFile(path);
+    Ps5GameInfo info;
+    info.serial = param.value("titleId", std::string{});
+    if (info.serial.empty()) {
+        return std::nullopt;
+    }
+    if (param.contains("localizedParameters") && param["localizedParameters"].is_object()) {
+        const auto& names = param["localizedParameters"];
+        const std::string fallback = names.value("defaultLanguage", std::string{"en-US"});
+        for (const std::string& lang : {std::string{"es-ES"}, std::string{"es-419"}, fallback,
+                                        std::string{"en-US"}}) {
+            if (names.contains(lang) && names[lang].is_object()) {
+                info.title = names[lang].value("titleName", std::string{});
+                if (!info.title.empty()) {
+                    break;
+                }
+            }
+        }
+    }
+    if (info.title.empty()) {
+        info.title = info.serial;
+    }
+    return info;
+}
+
 std::string ExternalEngineResolution(const std::string& serial) {
     const auto found = FindEngine(serial);
     if (!found) {
@@ -1271,6 +1322,10 @@ std::string ExternalEngineResolution(const std::string& serial) {
     if (engine.kind == "bloodborne") {
         const auto res = ReadKeyValue(folder / "bbport.ini", "output_res");
         return res == "3840x2160" ? "4K" : res == "2560x1440" ? "1440p" : "1080p";
+    }
+    if (engine.kind == "kyty-astro") {
+        const auto res = ReadKeyValue(folder / "brunoshadps4-kyty.ini", "pantalla");
+        return res == "1440p" ? "1440p" : res == "1080p" ? "1080p" : "4K";
     }
     if (engine.kind == "uncharted") {
         const auto config = ReadJsonFile(AppDataFile("Uncharted Launcher/launcher.json"));
@@ -1301,6 +1356,8 @@ std::string CycleExternalEngineResolution(const std::string& serial) {
                     next == "4K"      ? "2160"
                     : next == "1440p" ? "1440"
                                       : "1080");
+    } else if (engine.kind == "kyty-astro") {
+        SetKeyValue(folder / "brunoshadps4-kyty.ini", "pantalla", next);
     } else if (engine.kind == "spartanport") {
         const auto ini = folder / "spartanport.ini";
         SetKeyValue(ini, "render_resolution", next == "1080p" ? "native" : next);
@@ -1346,6 +1403,10 @@ std::optional<ExternalEngineCard> DescribeExternalEngine(const std::string& seri
             card.details = UnchartedDetails();
         } else if (engine.kind == "shadps4-release") {
             card.details = ReleaseBuildDetails(program.parent_path());
+        } else if (engine.kind == "kyty-astro") {
+            card.details[0] = "Pantalla: " + ExternalEngineResolution(serial);
+            card.details[1] = "Render 2432x1368 + FSR 3.1 a 4K";
+            card.details[2] = "45 fps reales + generación FSR (90 en pantalla)";
         } else {
             card.details[0] = "Ajustes: en su propio programa";
         }
@@ -1405,7 +1466,10 @@ void StartEngineUpdate(const std::string& serial, bool force_reinstall) {
 
     std::thread([=] {
         SetCurrentThreadName("EngineUpdater");
-        const std::string api_url = "https://api.github.com/repos/" + repo + "/releases/latest";
+        // biggsymobile publishes its KytyPS5 Astro builds as pre-releases: the newest in the list.
+        const bool tag_versions = engine.kind == "kyty-astro";
+        const std::string api_url = "https://api.github.com/repos/" + repo +
+                                    (tag_versions ? "/releases?per_page=1" : "/releases/latest");
         const std::string body = FetchUrlText(api_url);
         if (body.empty()) {
             ModifyUpdateStatus([&](EngineUpdateStatus& st) {
@@ -1417,8 +1481,11 @@ void StartEngineUpdate(const std::string& serial, bool force_reinstall) {
             return;
         }
 
-        const auto json = nlohmann::json::parse(body, nullptr, false);
-        if (json.is_discarded() || !json.contains("tag_name") || !json["tag_name"].is_string()) {
+        auto json = nlohmann::json::parse(body, nullptr, false);
+        if (tag_versions && json.is_array() && !json.empty()) {
+            json = nlohmann::json(json[0]);
+        }
+        if (json.is_discarded() || !json.is_object() || !json.contains("tag_name") || !json["tag_name"].is_string()) {
             ModifyUpdateStatus([&](EngineUpdateStatus& st) {
                 st.active = false;
                 st.finished = true;
@@ -1430,12 +1497,14 @@ void StartEngineUpdate(const std::string& serial, bool force_reinstall) {
 
         const std::string tag_name = json.value("tag_name", std::string{});
         const std::string rel_name = json.value("name", std::string{});
-        const std::string latest_ver = ExtractVersionString(tag_name, rel_name);
+        const std::string latest_ver =
+            tag_versions ? tag_name : ExtractVersionString(tag_name, rel_name);
 
         ModifyUpdateStatus([&](EngineUpdateStatus& st) { st.latest_version = latest_ver; });
 
         if (installed && !force_reinstall && !installed_ver.empty() && !latest_ver.empty() &&
-            ParseVersionTuple(installed_ver) >= ParseVersionTuple(latest_ver)) {
+            (tag_versions ? installed_ver == latest_ver
+                          : ParseVersionTuple(installed_ver) >= ParseVersionTuple(latest_ver))) {
             if (is_external) {
                 WriteText(target_dir / "VERSION", installed_ver + "\n");
                 InvalidateVersionCache(program);
@@ -1809,6 +1878,46 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
             break;
         }
         args = {"--play", keys[game]};
+    } else if (engine.kind == "kyty-astro") {
+        const auto choice =
+            ChooseResolution(title.empty() ? serial : title, ExternalEngineResolution(serial));
+        if (!choice) {
+            return WentBack(serial);
+        }
+        SetKeyValue(program_folder / "brunoshadps4-kyty.ini", "pantalla", *choice);
+        // What measured best on an RX 6800 XT (CPU Plaza, frame times logged with KYTY_PACE_LOG):
+        // render 1368p upscaled by FSR 3.1 to 4K, FSR frame generation, and the game held at 45
+        // real fps (vblank 45, the fork's built-in Decouple keeps its speed). At 60 the emulated
+        // CPU misses vblanks and frames jump between 16.7 and 33 ms (about 60 hitches a minute,
+        // the same at 1080p); at 45 they stay at 22.2 ms (one a minute).
+        const auto preset_path = program_folder / "u59-preset.json";
+        auto preset = ReadJsonFile(preset_path);
+        preset["KYTY_ASTRO_RENDER_RES"] = "1368";
+        preset["KYTY_FSR"] = "1";
+        preset["KYTY_FSR_SHARPNESS"] = "0.5";
+        preset["KYTY_FRAMEGEN"] = "1";
+        preset["KYTY_FRAMEGEN_BACKEND"] = "fsr";
+        preset["KYTY_PRESENT_ABS_VBLANK"] = "1";
+        preset["KYTY_FLOAT_PROFILE"] = "relaxed";
+        WriteText(preset_path, preset.dump(2));
+        const std::string width = *choice == "4K" ? "3840" : *choice == "1440p" ? "2560" : "1920";
+        const std::string height = *choice == "4K" ? "2160" : *choice == "1440p" ? "1440" : "1080";
+        args = {"--game",
+                FS::PathToUTF8String(eboot.parent_path()),
+                "--screen-width",
+                width,
+                "--screen-height",
+                height,
+                "--fullscreen",
+                "--vblank-frequency",
+                "45",
+                "--present-mode",
+                "Immediate",
+                "--console-language",
+                "20",
+                "--skip-notice-screen",
+                "true"};
+        // No --amd-cpu: the emulator turns its AMD-instruction patch on by itself on Intel CPUs.
     } else if (engine.kind == "shadps4") {
         args = {"--game", FS::PathToUTF8String(eboot)};
     } else {

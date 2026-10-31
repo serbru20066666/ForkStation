@@ -18,6 +18,7 @@ namespace Common {
 ///   CUSA00004,CUSA00223 = shadps4-release | motores\inFamous\shadPS4.exe
 ///   CUSA02320,CUSA02343,CUSA02344 = uncharted | motores\Uncharted\Uncharted Launcher.exe
 ///   CUSA03173,CUSA00900,... = bloodborne | motores\Bloodborne\Bloodborne.exe
+///   PPSA01325,PPSA21564,... = kyty-astro | motores\AstroBot\kyty_emulator.exe
 /// Kinds:
 ///   spartanport      writes the game folder into the program's settings.json, runs it with --play
 ///   issn             the same launcher with its settings in %APPDATA%\issn-launcher\settings.json
@@ -27,7 +28,18 @@ namespace Common {
 ///                    opens that launcher, to choose one of the collection's three games
 ///   bloodborne       the game folder in %APPDATA%\bbport-launcher\settings.json, the picture in
 ///                    bbport.ini beside it, runs it with --play
+///   kyty-astro       biggsymobile's KytyPS5 fork for Astro's Playroom / Astro Bot (PS5): runs it
+///                    with --game <game folder> at the chosen screen size; its own settings
+///                    (render resolution, FSR, frame generation) are in u59-preset.json beside it
 /// "interno" as the kind keeps the game on this program.
+
+/// A PS5 game folder (sce_sys/param.json instead of param.sfo): its title ID and name, Spanish
+/// first. PS5 games only run on another program (motores.ini), never here.
+struct Ps5GameInfo {
+    std::string serial;
+    std::string title;
+};
+std::optional<Ps5GameInfo> ReadPs5GameInfo(const std::filesystem::path& game_folder);
 
 /// What a game card says about a game that runs on another program, from that program's own
 /// settings (or what it used the last time). Empty for games that run here.

@@ -750,6 +750,13 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
                         category.has_value() && category->starts_with("ac")) {
                         continue;
                     }
+                } else if (const auto ps5 = entry.is_directory()
+                                                ? Common::ReadPs5GameInfo(entry.path())
+                                                : std::nullopt;
+                           ps5 && Common::DescribeExternalEngine(ps5->serial)) {
+                    // A PS5 game: listed only when a program in motores runs it.
+                    icon.title = ps5->title;
+                    icon.serial = ps5->serial;
                 } else {
                     continue;
                 }
