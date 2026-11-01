@@ -2259,6 +2259,16 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
 #endif
 }
 
+void BringWindowToFront(void* native_window) {
+#ifdef _WIN32
+    if (native_window) {
+        ForceForeground(static_cast<HWND>(native_window));
+    }
+#else
+    (void)native_window;
+#endif
+}
+
 bool StartedByRetroBat() {
 #ifdef _WIN32
     return LaunchedFromRetroBat();

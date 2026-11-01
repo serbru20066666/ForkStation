@@ -93,6 +93,9 @@ void StartUpdateChecks(const std::vector<std::string>& serials);
 /// The check's result for a game, once it has one.
 std::optional<EngineUpdateHint> GetUpdateHint(const std::string& serial);
 
+/// Brings a window (its native handle) to the front, even when Windows would refuse it.
+void BringWindowToFront(void* native_window);
+
 /// Whether RetroBat (its emulatorLauncher) started this program.
 bool StartedByRetroBat();
 

@@ -2018,6 +2018,17 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
     }
 }
 
+/// Full screen of its own (exclusive, at the desktop's mode), raised and in front of every other
+/// window, as a console's screen.
+void TakeTheScreen(SDL_Window* window) {
+    if (const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(SDL_GetDisplayForWindow(window))) {
+        SDL_SetWindowFullscreenMode(window, mode);
+    }
+    TakeTheScreen(window);
+    Common::BringWindowToFront(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                                      SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+}
+
 std::optional<int> ChooseOptionMenu(const std::string& title, const std::string& subtitle,
                                     const std::vector<std::string>& labels, int selected) {
     const int n = static_cast<int>(labels.size());
@@ -2037,7 +2048,8 @@ std::optional<int> ChooseOptionMenu(const std::string& title, const std::string&
         }
         SDL_free(ids);
     }
-    SDL_Window* window = SDL_CreateWindow("ForkStation", 1280, 720, SDL_WINDOW_BORDERLESS);
+    SDL_Window* window = SDL_CreateWindow("ForkStation", 1280, 720,
+                                          SDL_WINDOW_BORDERLESS | SDL_WINDOW_ALWAYS_ON_TOP);
     SDL_Renderer* menu_renderer = window ? SDL_CreateRenderer(window, nullptr) : nullptr;
     if (!menu_renderer) {
         if (window) {
@@ -2215,6 +2227,10 @@ std::optional<int> ChooseOptionMenu(const std::string& title, const std::string&
         SDL_RenderClear(menu_renderer);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), menu_renderer);
         SDL_RenderPresent(menu_renderer);
+        if (SDL_GetTicks() - opened < 1500 &&
+            !(SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS)) {
+            TakeTheScreen(window);
+        }
         SDL_Delay(8);
     }
     ImGui_ImplSDLRenderer3_Shutdown();
@@ -2309,7 +2325,7 @@ void Launch(char* executableName, bool sameProcess) {
         SDL_SetWindowSize(window, static_cast<int>(want_w * uiScale),
                           static_cast<int>(want_h * uiScale));
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-        SDL_SetWindowFullscreen(window, true); // the home screen fills the screen, like a console's
+        TakeTheScreen(window); // the home screen takes the whole screen, like a console's
     };
     auto applySettings = [&] {
         GetGameIconInfo(gameIcons);
