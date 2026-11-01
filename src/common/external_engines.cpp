@@ -381,7 +381,9 @@ std::string InspectExecutableVersion(const std::filesystem::path& program) {
 std::string EngineVersion(const std::filesystem::path& program) {
     const auto folder = program.parent_path();
     // KytyPS5 Astro builds are tagged like "astrobot-dlss-int21-23w": the tag is the version.
-    if (ToLower(FS::PathToUTF8String(program.filename())) == "kyty_emulator.exe") {
+    // KytyPS5 and tlg_pc builds are named by their release tag, kept whole in VERSION.
+    if (const auto exe = ToLower(FS::PathToUTF8String(program.filename()));
+        exe == "kyty_emulator.exe" || exe == "the last guardian.exe") {
         std::ifstream in{folder / "VERSION"};
         std::string line;
         std::getline(in, line);

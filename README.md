@@ -26,6 +26,16 @@ Su motor propio, para los juegos que no tienen un port, deriva del emulador [sha
 * **En el juego**: Select + Start lo cierra y vuelve a la pantalla de inicio (o al frontend que lo abrió).
 * **RetroBat**: en Opciones avanzadas del juego aparecen "Actualizar fork desde su GitHub" (la ventana de actualización antes de jugar) y "Versión de los forks" (la versión de cada fork y si hay una nueva).
 
+### Capturas
+
+| | |
+|---|---|
+| ![Inicio](documents/Screenshots/forkstation/01-inicio.jpg) | ![Guía de inicio](documents/Screenshots/forkstation/02-guia-bienvenida.jpg) |
+| ![Pantalla de inicio PS4](documents/Screenshots/forkstation/06-inicio-ps4.jpg) | ![Pantalla de inicio PS5](documents/Screenshots/forkstation/08-inicio-ps5.jpg) |
+| ![Menú de opciones del juego](documents/Screenshots/forkstation/07-menu-opciones.jpg) | ![Actualizar fork](documents/Screenshots/forkstation/09-actualizar-fork.jpg) |
+| ![Elegir resolución](documents/Screenshots/forkstation/12-elegir-resolucion.jpg) | ![Elegir carpeta con el mando](documents/Screenshots/forkstation/11-elegir-carpeta.jpg) |
+| ![Guía: añadir juegos](documents/Screenshots/forkstation/04-guia-carpeta.jpg) | ![Acerca de](documents/Screenshots/forkstation/10-acerca-de.jpg) |
+
 ### Cambios integrados en este repositorio:
 * **God of War III Remastered (Fix)**: Corrección de errores gráficos (líneas/rayas horizontales al renderizar) desactivando de manera forzada el MSAA del host específicamente para este título (CUSA01623 y CUSA01715).
 * Ajustes de compilación mejorados y personalizados para SDL sin dependencias rotas de ramas anteriores.
