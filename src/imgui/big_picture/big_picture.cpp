@@ -644,9 +644,9 @@ void SetGameIcons(std::vector<IconInfo>& gameIcons, int& settingsFor, int& sugge
             const float by = 4.0f * uiScale;
             const ImVec2 bmax{cover_max.x - 8.0f * uiScale, cover_max.y - 8.0f * uiScale};
             const ImVec2 bmin{bmax.x - text.x - bx * 2.0f, bmax.y - text.y - by * 2.0f};
-            draw_list->AddRectFilled(bmin, bmax,
-                                     must_update ? IM_COL32(200, 60, 50, 235) : IM_COL32(230, 150, 20, 235),
-                                     8.0f * uiScale);
+            draw_list->AddRectFilled(
+                bmin, bmax, must_update ? IM_COL32(200, 60, 50, 235) : IM_COL32(230, 150, 20, 235),
+                8.0f * uiScale);
             draw_list->AddText({bmin.x + bx, bmin.y + by}, IM_COL32_WHITE, badge);
             ImGui::SetWindowFontScale(uiScale);
             if (ImGui::IsMouseHoveringRect(bmin, bmax)) {
@@ -1107,7 +1107,8 @@ void Launch(char* executableName, bool sameProcess) {
                 FillGameDetails(gameIcons);
                 updateRefreshed = true;
                 if (st.success) {
-                    Common::RefreshForkItems(GameFolders()); // RetroBat's items show the new version
+                    Common::RefreshForkItems(
+                        GameFolders()); // RetroBat's items show the new version
                 }
             }
             ImGui::SetWindowFontScale(uiScale * 1.35f);

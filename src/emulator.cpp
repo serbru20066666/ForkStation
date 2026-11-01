@@ -18,9 +18,9 @@
 extern char** environ;
 #endif
 
+#include "common/debug.h"
 #include "common/external_engines.h"
 #include "common/game_edition.h"
-#include "common/debug.h"
 #include "common/logging/log.h"
 #include "common/string_util.h"
 #include "common/thread.h"
@@ -851,8 +851,7 @@ void Emulator::Restart(std::filesystem::path eboot_path,
     PROCESS_INFORMATION pi{};
     // No console window for the game: its log is in the log folder.
     bool success = CreateProcessW(executable.c_str(), cmdline.data(), nullptr, nullptr, TRUE,
-                                  CREATE_NO_WINDOW,
-                                  nullptr, nullptr, &si, &pi);
+                                  CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
 
     if (!success) {
         std::cerr << "Failed to restart game: {}" << GetLastError() << std::endl;

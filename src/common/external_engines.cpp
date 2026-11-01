@@ -26,8 +26,8 @@
 #include "core/file_sys/ifile.h"
 
 #ifdef _WIN32
-#include <windows.h>
 #include <tlhelp32.h>
+#include <windows.h>
 #pragma comment(lib, "gdi32.lib")
 #endif
 
@@ -104,8 +104,9 @@ std::map<std::string, Engine> LoadTable(const std::filesystem::path& folder) {
     ParseLine(
         R"(PPSA01325,PPSA21564,PPSA21567,PPSA21568 = kyty-astro | motores\AstroBot\kyty_emulator.exe)",
         table);
-    ParseLine(R"(PPSA01342,PPSA01341,PPSA01340 = kyty-souls | motores\DemonsSouls\kyty_emulator.exe)",
-              table);
+    ParseLine(
+        R"(PPSA01342,PPSA01341,PPSA01340 = kyty-souls | motores\DemonsSouls\kyty_emulator.exe)",
+        table);
     std::ifstream in{folder / "motores.ini"};
     std::string line;
     while (in && std::getline(in, line)) {
@@ -687,7 +688,8 @@ bool LaunchedFromRetroBat() {
 class PadExitWatch {
 public:
     PadExitWatch() {
-        // The game's window has the focus: read the controllers anyway, and leave their lights alone.
+        // The game's window has the focus: read the controllers anyway, and leave their lights
+        // alone.
         SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
         SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_PLAYER_LED, "0");
         ready = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
@@ -744,8 +746,8 @@ void PlaceShaderCacheOnLocalDrive(const std::filesystem::path& engine_folder) {
         return;
     }
     std::error_code ec;
-    const auto local =
-        std::filesystem::path{local_appdata} / "brunoShadPs4" / "shader-cache" / engine_folder.filename();
+    const auto local = std::filesystem::path{local_appdata} / "brunoShadPs4" / "shader-cache" /
+                       engine_folder.filename();
     const auto root_of = [](const std::filesystem::path& p) {
         return ToLower(FS::PathToUTF8String(std::filesystem::absolute(p).root_name()));
     };
@@ -755,16 +757,19 @@ void PlaceShaderCacheOnLocalDrive(const std::filesystem::path& engine_folder) {
     const auto cache = engine_folder / "_PipelineCache";
     const auto kept = engine_folder / "_PipelineCache.disco";
     // Already linked here: done. A link of another PC (its target missing here) is replaced.
-    if (std::filesystem::is_symlink(cache, ec) || (GetFileAttributesW(cache.c_str()) != INVALID_FILE_ATTRIBUTES &&
-                                                   (GetFileAttributesW(cache.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT))) {
-        if (std::filesystem::is_directory(local, ec) && std::filesystem::equivalent(cache, local, ec)) {
+    if (std::filesystem::is_symlink(cache, ec) ||
+        (GetFileAttributesW(cache.c_str()) != INVALID_FILE_ATTRIBUTES &&
+         (GetFileAttributesW(cache.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT))) {
+        if (std::filesystem::is_directory(local, ec) &&
+            std::filesystem::equivalent(cache, local, ec)) {
             return;
         }
         RemoveDirectoryW(cache.c_str()); // the link only, never what it points to
     } else if (std::filesystem::is_directory(cache, ec)) {
         std::filesystem::rename(cache, kept, ec);
         if (ec) {
-            LOG_WARNING(Common, "Shader cache stays in {}: {}", FS::PathToUTF8String(cache), ec.message());
+            LOG_WARNING(Common, "Shader cache stays in {}: {}", FS::PathToUTF8String(cache),
+                        ec.message());
             return;
         }
     }
@@ -776,13 +781,14 @@ void PlaceShaderCacheOnLocalDrive(const std::filesystem::path& engine_folder) {
                                   std::filesystem::copy_options::skip_existing,
                               ec);
     }
-    std::wstring cmd = L"cmd.exe /d /c mklink /J \"" + cache.wstring() + L"\" \"" + local.wstring() + L"\"";
+    std::wstring cmd =
+        L"cmd.exe /d /c mklink /J \"" + cache.wstring() + L"\" \"" + local.wstring() + L"\"";
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
     DWORD code = 1;
-    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
-                       &pi)) {
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                       nullptr, &si, &pi)) {
         WaitForSingleObject(pi.hProcess, 10000);
         GetExitCodeProcess(pi.hProcess, &code);
         CloseHandle(pi.hProcess);
@@ -794,8 +800,8 @@ void PlaceShaderCacheOnLocalDrive(const std::filesystem::path& engine_folder) {
         LOG_WARNING(Common, "Shader cache could not be linked to {}", FS::PathToUTF8String(local));
         return;
     }
-    LOG_INFO(Common, "Shader cache of {} on this PC's drive: {}", FS::PathToUTF8String(engine_folder.filename()),
-             FS::PathToUTF8String(local));
+    LOG_INFO(Common, "Shader cache of {} on this PC's drive: {}",
+             FS::PathToUTF8String(engine_folder.filename()), FS::PathToUTF8String(local));
 }
 
 bool StartAndWait(const std::filesystem::path& program, const std::vector<std::string>& args,
@@ -1465,8 +1471,8 @@ std::optional<Ps5GameInfo> ReadPs5GameInfo(const std::filesystem::path& game_fol
     if (param.contains("localizedParameters") && param["localizedParameters"].is_object()) {
         const auto& names = param["localizedParameters"];
         const std::string fallback = names.value("defaultLanguage", std::string{"en-US"});
-        for (const std::string& lang : {std::string{"es-ES"}, std::string{"es-419"}, fallback,
-                                        std::string{"en-US"}}) {
+        for (const std::string& lang :
+             {std::string{"es-ES"}, std::string{"es-419"}, fallback, std::string{"en-US"}}) {
             if (names.contains(lang) && names[lang].is_object()) {
                 info.title = names[lang].value("titleName", std::string{});
                 if (!info.title.empty()) {
@@ -1909,7 +1915,8 @@ void StartUpdateChecks(const std::vector<std::string>& serials) {
         for (const auto& serial : serials) {
             const auto configured = FindConfiguredEngine(serial);
             const bool external = configured.has_value();
-            const Engine engine = external ? configured->first : Engine{"interno", ExecutablePath()};
+            const Engine engine =
+                external ? configured->first : Engine{"interno", ExecutablePath()};
             const auto program = external ? configured->second : ExecutablePath();
             auto& target = targets[program];
             target.engine = engine;
@@ -1930,13 +1937,15 @@ void StartUpdateChecks(const std::vector<std::string>& serials) {
             const auto release =
                 FetchLatestRelease(target.engine, EngineGitHubRepo(target.engine, program));
             if (!release.ok) {
-                LOG_INFO(Common, "Update check of {}: {}", FS::PathToUTF8String(program), release.error);
+                LOG_INFO(Common, "Update check of {}: {}", FS::PathToUTF8String(program),
+                         release.error);
                 continue;
             }
             EngineUpdateHint hint;
             hint.checked = true;
             hint.missing = !installed;
-            hint.available = installed && IsNewerVersion(target.engine, installed_ver, release.version);
+            hint.available =
+                installed && IsNewerVersion(target.engine, installed_ver, release.version);
             hint.installed_version = installed_ver;
             hint.latest_version = release.version;
             std::scoped_lock lock{g_hints_mutex};
@@ -2003,8 +2012,10 @@ std::string ForkItemDescription(const std::string& serial, const Engine& engine,
     const std::string installed_ver =
         external ? (installed ? EngineVersion(program) : std::string{}) : CleanEmulatorVersion();
     const std::string name = external ? EngineName(engine, program) : std::string{"brunoShadPs4"};
-    std::string text = fmt::format("Fork: {} (github.com/{})\n", name, EngineGitHubRepo(engine, program));
-    text += fmt::format("Versión instalada: {}\n", installed_ver.empty() ? "no instalado" : installed_ver);
+    std::string text =
+        fmt::format("Fork: {} (github.com/{})\n", name, EngineGitHubRepo(engine, program));
+    text += fmt::format("Versión instalada: {}\n",
+                        installed_ver.empty() ? "no instalado" : installed_ver);
     if (!release.ok) {
         text += "Última versión en GitHub: no se pudo consultar (sin conexión).\n";
     } else {
@@ -2044,8 +2055,8 @@ void SetGamelistDescription(const std::filesystem::path& folder, const std::stri
         if (end == std::string::npos) {
             return;
         }
-        xml.insert(end, "\t<game>\n\t\t" + path_tag + "\n\t\t<name>" + XmlEscape(name) + "</name>\n\t\t" +
-                            desc_tag + "\n\t</game>\n");
+        xml.insert(end, "\t<game>\n\t\t" + path_tag + "\n\t\t<name>" + XmlEscape(name) +
+                            "</name>\n\t\t" + desc_tag + "\n\t</game>\n");
     } else {
         const auto game_end = xml.find("</game>", at);
         const auto desc_begin = xml.find("<desc>", at);
@@ -2085,15 +2096,17 @@ void RefreshForkItems(const std::vector<std::filesystem::path>& folders) {
                 }
                 const auto configured = FindConfiguredEngine(*serial);
                 const bool external = configured.has_value();
-                const Engine engine = external ? configured->first : Engine{"interno", ExecutablePath()};
+                const Engine engine =
+                    external ? configured->first : Engine{"interno", ExecutablePath()};
                 const auto program = external ? configured->second : ExecutablePath();
                 if (!releases.contains(program)) {
-                    releases[program] = FetchLatestRelease(engine, EngineGitHubRepo(engine, program));
+                    releases[program] =
+                        FetchLatestRelease(engine, EngineGitHubRepo(engine, program));
                 }
-                SetGamelistDescription(folder, FS::PathToUTF8String(entry.path().filename()),
-                                       FS::PathToUTF8String(entry.path().stem()),
-                                       ForkItemDescription(*serial, engine, program, external,
-                                                           releases[program]));
+                SetGamelistDescription(
+                    folder, FS::PathToUTF8String(entry.path().filename()),
+                    FS::PathToUTF8String(entry.path().stem()),
+                    ForkItemDescription(*serial, engine, program, external, releases[program]));
             }
         }
     }).detach();
@@ -2439,11 +2452,10 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
         GetSystemDirectoryW(system, MAX_PATH);
         run = std::filesystem::path{system} / "WindowsPowerShell" / "v1.0" / "powershell.exe";
     }
-    const bool success =
-        StartAndWait(run, args, title.empty() ? serial : title, EngineName(engine, program),
-                     (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") &&
-                         LaunchedFromRetroBat(),
-                     program_folder);
+    const bool success = StartAndWait(
+        run, args, title.empty() ? serial : title, EngineName(engine, program),
+        (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") && LaunchedFromRetroBat(),
+        program_folder);
     SyncGameSaves(serial, program_folder);
     return success;
 #else
