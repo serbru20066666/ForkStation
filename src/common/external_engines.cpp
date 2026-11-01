@@ -110,7 +110,7 @@ std::map<std::string, Engine> LoadTable(const std::filesystem::path& folder) {
     ParseLine(
         R"(PPSA01342,PPSA01341,PPSA01340 = kyty-souls | motores\DemonsSouls\kyty_emulator.exe)",
         table);
-    ParseLine(R"(CUSA03627,CUSA03745 = tlg | motores\TheLastGuardian\Play The Last Guardian.exe)",
+    ParseLine(R"(CUSA03627,CUSA03745 = tlg | motores\TheLastGuardian\The Last Guardian.exe)",
               table);
     std::ifstream in{folder / "motores.ini"};
     std::string line;
@@ -2196,8 +2196,9 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
                 "-Language",
                 "3"};
     } else if (engine.kind == "tlg") {
-        // HayatoG's port starts the game folder kept in its own folder (its "Play" program).
-        args = {};
+        // HayatoG's port plays straight away with --play; the game's files are in its own folder
+        // (TLG_GAME_DIR below, so nothing is set up on the PC).
+        args = {"--play"};
     } else if (engine.kind == "shadps4") {
         args = {"--game", FS::PathToUTF8String(eboot)};
     } else {
@@ -2210,6 +2211,9 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
     // kyty-souls starts through PowerShell; the job still holds the emulator it starts.
     if (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") {
         PlaceShaderCacheOnLocalDrive(program_folder);
+    }
+    if (engine.kind == "tlg") {
+        SetEnvironmentVariableW(L"TLG_GAME_DIR", program_folder.wstring().c_str());
     }
     std::filesystem::path run = program;
     if (engine.kind == "kyty-souls") {
