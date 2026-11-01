@@ -6,6 +6,8 @@
 #include <array>
 
 #include <filesystem>
+#include <optional>
+#include <string>
 #include <vector>
 #include <SDL3/SDL.h>
 #include <imgui.h>
@@ -34,6 +36,10 @@ void Launch(char* executableName, bool sameProcess);
 /// items) and returns when it is closed.
 void LaunchUpdate(char* executableName, const std::string& serial);
 void GetGameIconInfo(std::vector<IconInfo>& icons);
+/// A full screen choice in the look of the menus (the resolution before a game): the chosen
+/// option, or nothing when the player went back.
+std::optional<int> ChooseOptionMenu(const std::string& title, const std::string& subtitle,
+                                    const std::vector<std::string>& labels, int selected);
 SDL_Texture* LoadSdlTextureData(std::vector<u8> data);
 SDL_Texture* LoadSdlTextureDataFromFile(std::filesystem::path filePath);
 

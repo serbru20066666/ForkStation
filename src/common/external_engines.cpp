@@ -5,6 +5,8 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
+#include <ctime>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -24,6 +26,7 @@
 #include "common/scm_rev.h"
 #include "common/thread.h"
 #include "core/file_sys/ifile.h"
+#include "imgui/big_picture/big_picture.h"
 
 #ifdef _WIN32
 #include <tlhelp32.h>
@@ -283,7 +286,7 @@ std::string EngineGitHubRepo(const Engine& engine, const std::filesystem::path& 
         }
         return "shadps4-emu/shadPS4";
     }
-    return "serbru20066666/brunoShadPs4";
+    return "serbru20066666/ForkStation";
 }
 
 std::string CleanEmulatorVersion() {
@@ -578,15 +581,15 @@ struct Splash {
         WNDCLASSW wc{};
         wc.lpfnWndProc = Proc;
         wc.hInstance = GetModuleHandleW(nullptr);
-        wc.lpszClassName = L"brunoShadPs4Abriendo";
+        wc.lpszClassName = L"ForkStationAbriendo";
         wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
         RegisterClassW(&wc);
         const int w = 620, h = 150;
         const int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
         const int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
-        window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, wc.lpszClassName,
-                                 L"brunoShadPs4", WS_POPUP | WS_BORDER, x, y, w, h, nullptr,
-                                 nullptr, wc.hInstance, nullptr);
+        window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, wc.lpszClassName, L"ForkStation",
+                                 WS_POPUP | WS_BORDER, x, y, w, h, nullptr, nullptr, wc.hInstance,
+                                 nullptr);
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
         ShowWindow(window, SW_SHOWNOACTIVATE);
         SetTimer(window, 1, 30, nullptr);
@@ -989,155 +992,7 @@ void ForceForeground(HWND hwnd) {
 /// Returns the chosen index, or nothing when the player went back.
 std::optional<int> ChooseOption(const std::string& title, const std::string& subtitle,
                                 const std::vector<std::string>& labels, int selected) {
-    const int n = static_cast<int>(labels.size());
-    // The pad answers even while another window has the focus.
-    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-    if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        return selected;
-    }
-    std::vector<SDL_Gamepad*> pads;
-    int count = 0;
-    if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
-        for (int i = 0; i < count; ++i) {
-            if (SDL_Gamepad* pad = SDL_OpenGamepad(ids[i])) {
-                pads.push_back(pad);
-            }
-        }
-        SDL_free(ids);
-    }
-    const int width = 1100, height = 620;
-    SDL_Window* window = SDL_CreateWindow("brunoShadPs4", width, height, SDL_WINDOW_BORDERLESS);
-    SDL_Renderer* renderer = window ? SDL_CreateRenderer(window, nullptr) : nullptr;
-    if (!renderer) {
-        if (window) {
-            SDL_DestroyWindow(window);
-        }
-        SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
-        return selected;
-    }
-    SDL_RaiseWindow(window);
-#ifdef _WIN32
-    HWND hwnd = static_cast<HWND>(SDL_GetPointerProperty(
-        SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
-    if (hwnd) {
-        ForceForeground(hwnd);
-    }
-    int frames = 0;
-#endif
-    // The debug font has ASCII only.
-    std::string ascii_title;
-    for (const char c : title) {
-        if (static_cast<unsigned char>(c) < 128) {
-            ascii_title += c;
-        }
-    }
-    const auto text = [&](float x, float y, float scale, const char* s, Uint8 r, Uint8 g, Uint8 b) {
-        SDL_SetRenderScale(renderer, scale, scale);
-        SDL_SetRenderDrawColor(renderer, r, g, b, 255);
-        SDL_RenderDebugText(renderer, x / scale, y / scale, s);
-        SDL_SetRenderScale(renderer, 1.0f, 1.0f);
-    };
-    std::optional<int> result;
-    bool done = false;
-    int last_axis = 0;
-    // The press that started the game (in the launcher) must not also choose here.
-    const Uint64 opened = SDL_GetTicks();
-    while (!done) {
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            const bool settling = SDL_GetTicks() - opened < 500;
-            if (settling &&
-                (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || e.type == SDL_EVENT_KEY_DOWN ||
-                 e.type == SDL_EVENT_MOUSE_BUTTON_DOWN)) {
-                continue;
-            }
-            if (e.type == SDL_EVENT_KEY_DOWN && e.key.repeat) {
-                continue;
-            }
-            if (e.type == SDL_EVENT_QUIT) {
-                done = true;
-            } else if (e.type == SDL_EVENT_GAMEPAD_ADDED) {
-                if (SDL_Gamepad* pad = SDL_OpenGamepad(e.gdevice.which)) {
-                    pads.push_back(pad);
-                }
-            } else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
-                switch (e.gbutton.button) {
-                case SDL_GAMEPAD_BUTTON_DPAD_UP:
-                case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
-                    selected = (selected + n - 1) % n;
-                    break;
-                case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
-                case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
-                    selected = (selected + 1) % n;
-                    break;
-                case SDL_GAMEPAD_BUTTON_SOUTH:
-                case SDL_GAMEPAD_BUTTON_START:
-                    result = selected;
-                    done = true;
-                    break;
-                case SDL_GAMEPAD_BUTTON_EAST:
-                case SDL_GAMEPAD_BUTTON_BACK:
-                    done = true;
-                    break;
-                default:
-                    break;
-                }
-            } else if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION &&
-                       e.gaxis.axis == SDL_GAMEPAD_AXIS_LEFTY) {
-                const int dir = e.gaxis.value > 20000 ? 1 : e.gaxis.value < -20000 ? -1 : 0;
-                if (dir != 0 && dir != last_axis) {
-                    selected = (selected + n + dir) % n;
-                }
-                last_axis = dir;
-            } else if (e.type == SDL_EVENT_KEY_DOWN) {
-                if (e.key.key == SDLK_UP || e.key.key == SDLK_LEFT) {
-                    selected = (selected + n - 1) % n;
-                } else if (e.key.key == SDLK_DOWN || e.key.key == SDLK_RIGHT) {
-                    selected = (selected + 1) % n;
-                } else if (e.key.key == SDLK_RETURN || e.key.key == SDLK_SPACE) {
-                    result = selected;
-                    done = true;
-                } else if (e.key.key == SDLK_ESCAPE) {
-                    done = true;
-                }
-            } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-                const int row = static_cast<int>((e.button.y - 200.0f) / 110.0f);
-                if (e.button.y >= 200.0f && row < n && e.button.x > 80 && e.button.x < width - 80) {
-                    selected = row;
-                    result = selected;
-                    done = true;
-                }
-            }
-        }
-        SDL_SetRenderDrawColor(renderer, 14, 14, 20, 255);
-        SDL_RenderClear(renderer);
-        text(80, 50, 4.0f, ascii_title.c_str(), 245, 245, 250);
-        text(80, 120, 2.5f, subtitle.c_str(), 160, 168, 190);
-        for (int i = 0; i < n; ++i) {
-            const SDL_FRect box{80.0f, 200.0f + i * 110.0f, width - 160.0f, 90.0f};
-            const bool on = i == selected;
-            SDL_SetRenderDrawColor(renderer, on ? 40 : 30, on ? 120 : 32, on ? 255 : 44, 255);
-            SDL_RenderFillRect(renderer, &box);
-            text(box.x + 30, box.y + 30, 3.5f, labels[i].c_str(), 255, 255, 255);
-        }
-        text(80, height - 60.0f, 2.0f, "Cruceta: elegir     X: aceptar     O: volver", 150, 155,
-             175);
-        SDL_RenderPresent(renderer);
-#ifdef _WIN32
-        // Again during the first second, in case something took the front back.
-        if (hwnd && ++frames < 60 && GetForegroundWindow() != hwnd) {
-            ForceForeground(hwnd);
-        }
-#endif
-        SDL_Delay(16);
-    }
-    for (SDL_Gamepad* pad : pads) {
-        SDL_CloseGamepad(pad);
-    }
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD);
-    return result;
+    return BigPictureMode::ChooseOptionMenu(title, subtitle, labels, selected);
 }
 
 /// The resolution screen: "1080p", "1440p" or "4K", or nothing when the player went back.
@@ -1149,7 +1004,7 @@ std::optional<std::string> ChooseResolution(const std::string& title, const std:
         }
     }
     const auto choice = ChooseOption(
-        title, "Elige la resolucion",
+        title, "Elige la resolución",
         {"1080p   (1920 x 1080)", "1440p   (2560 x 1440, 2K)", "4K      (3840 x 2160)"}, selected);
     if (!choice) {
         return std::nullopt;
@@ -1228,7 +1083,7 @@ std::string FetchUrlText(const std::string& url) {
     if (SplitUrl(url, base, path)) {
         httplib::Client cli(base);
         ConfigureHttpClient(cli, 10, 20);
-        const httplib::Headers headers = {{"User-Agent", "brunoShadPs4"},
+        const httplib::Headers headers = {{"User-Agent", "ForkStation"},
                                           {"Accept", "application/vnd.github+json"}};
         if (const auto res = cli.Get(path.c_str(), headers); res && res->status == 200) {
             return res->body;
@@ -1239,7 +1094,7 @@ std::string FetchUrlText(const std::string& url) {
     const auto tmp = std::filesystem::temp_directory_path() / "brunoshadps4_release.json";
     std::error_code ec;
     std::filesystem::remove(tmp, ec);
-    std::wstring cmd = L"curl.exe -fsSL -H \"User-Agent: brunoShadPs4\" -o \"" + tmp.wstring() +
+    std::wstring cmd = L"curl.exe -fsSL -H \"User-Agent: ForkStation\" -o \"" + tmp.wstring() +
                        L"\" \"" + std::filesystem::path{url}.wstring() + L"\"";
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -1273,7 +1128,7 @@ bool DownloadFileWithProgress(const std::string& url, const std::filesystem::pat
         if (out) {
             httplib::Client cli(base);
             ConfigureHttpClient(cli, 15, 120);
-            const httplib::Headers headers = {{"User-Agent", "brunoShadPs4"},
+            const httplib::Headers headers = {{"User-Agent", "ForkStation"},
                                               {"Accept", "application/octet-stream"}};
             uint64_t received = 0;
             const auto res = cli.Get(path.c_str(), headers, [&](const char* data, size_t len) {
@@ -1301,7 +1156,7 @@ bool DownloadFileWithProgress(const std::string& url, const std::filesystem::pat
         st.progress = -1.0f;
         st.message = fmt::format("Descargando {}...", asset_name);
     });
-    std::wstring cmd = L"curl.exe -fL -H \"User-Agent: brunoShadPs4\" -o \"" + dest.wstring() +
+    std::wstring cmd = L"curl.exe -fL -H \"User-Agent: ForkStation\" -o \"" + dest.wstring() +
                        L"\" \"" + std::filesystem::path{url}.wstring() + L"\"";
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -1713,7 +1568,7 @@ void StartEngineUpdate(const std::string& serial, bool force_reinstall) {
     const std::filesystem::path program = is_external ? configured->second : ExecutablePath();
     const std::filesystem::path target_dir = program.parent_path();
     const std::string engine_name =
-        is_external ? EngineName(engine, program) : std::string{"brunoShadPs4"};
+        is_external ? EngineName(engine, program) : std::string{"ForkStation"};
     const std::string repo = EngineGitHubRepo(engine, program);
 
     std::error_code ec;
@@ -1963,153 +1818,6 @@ std::optional<EngineUpdateHint> GetUpdateHint(const std::string& serial) {
         return std::nullopt;
     }
     return it->second;
-}
-
-std::optional<std::string> ReadForkItemSerial(const std::filesystem::path& fork_file) {
-    std::ifstream in{fork_file};
-    std::string line;
-    while (std::getline(in, line)) {
-        line = Trim(line);
-        if (line.starts_with("serial=")) {
-            const auto serial = Trim(line.substr(7));
-            if (!serial.empty()) {
-                return serial;
-            }
-        }
-    }
-    return std::nullopt;
-}
-
-namespace {
-
-std::string XmlEscape(const std::string& text) {
-    std::string out;
-    for (const char c : text) {
-        switch (c) {
-        case '&':
-            out += "&amp;";
-            break;
-        case '<':
-            out += "&lt;";
-            break;
-        case '>':
-            out += "&gt;";
-            break;
-        default:
-            out += c;
-        }
-    }
-    return out;
-}
-
-/// The description of a game's `.fork` item: its fork, the installed and latest versions and
-/// what to do.
-std::string ForkItemDescription(const std::string& serial, const Engine& engine,
-                                const std::filesystem::path& program, bool external,
-                                const LatestRelease& release) {
-    std::error_code ec;
-    const bool installed = std::filesystem::exists(program, ec);
-    const std::string installed_ver =
-        external ? (installed ? EngineVersion(program) : std::string{}) : CleanEmulatorVersion();
-    const std::string name = external ? EngineName(engine, program) : std::string{"brunoShadPs4"};
-    std::string text =
-        fmt::format("Fork: {} (github.com/{})\n", name, EngineGitHubRepo(engine, program));
-    text += fmt::format("Versión instalada: {}\n",
-                        installed_ver.empty() ? "no instalado" : installed_ver);
-    if (!release.ok) {
-        text += "Última versión en GitHub: no se pudo consultar (sin conexión).\n";
-    } else {
-        text += fmt::format("Última versión en GitHub: {}\n", release.version);
-        if (!installed) {
-            text += "DEBE INSTALARSE: abre este item para instalarlo.\n";
-        } else if (IsNewerVersion(engine, installed_ver, release.version)) {
-            text += "ACTUALIZACIÓN DISPONIBLE: abre este item para actualizar.\n";
-        } else {
-            text += "Al día: no hay actualizaciones.\n";
-        }
-    }
-    const std::time_t now = std::time(nullptr);
-    if (const std::tm* when = std::localtime(&now)) {
-        char date[32]{};
-        std::strftime(date, sizeof(date), "%d/%m/%Y %H:%M", when);
-        text += fmt::format("Comprobado: {}", date);
-    }
-    (void)serial;
-    return text;
-}
-
-/// Sets the description of the gamelist.xml entry for `file_name` (adding the entry with `name`
-/// if it has none), written to a temporary file first so RetroBat never reads half of it.
-void SetGamelistDescription(const std::filesystem::path& folder, const std::string& file_name,
-                            const std::string& name, const std::string& description) {
-    const auto gamelist = folder / "gamelist.xml";
-    std::string xml = ReadText(gamelist);
-    if (xml.empty()) {
-        xml = "<?xml version=\"1.0\"?>\n<gameList>\n</gameList>\n";
-    }
-    const std::string path_tag = "<path>./" + XmlEscape(file_name) + "</path>";
-    const std::string desc_tag = "<desc>" + XmlEscape(description) + "</desc>";
-    const auto at = xml.find(path_tag);
-    if (at == std::string::npos) {
-        const auto end = xml.rfind("</gameList>");
-        if (end == std::string::npos) {
-            return;
-        }
-        xml.insert(end, "\t<game>\n\t\t" + path_tag + "\n\t\t<name>" + XmlEscape(name) +
-                            "</name>\n\t\t" + desc_tag + "\n\t</game>\n");
-    } else {
-        const auto game_end = xml.find("</game>", at);
-        const auto desc_begin = xml.find("<desc>", at);
-        if (desc_begin != std::string::npos && desc_begin < game_end) {
-            const auto desc_end = xml.find("</desc>", desc_begin);
-            xml.replace(desc_begin, desc_end + 7 - desc_begin, desc_tag);
-        } else {
-            xml.insert(at + path_tag.size(), "\n\t\t" + desc_tag);
-        }
-    }
-    const auto temp = folder / "gamelist.xml.brunoshadps4";
-    if (WriteText(temp, xml)) {
-        std::error_code ec;
-        std::filesystem::rename(temp, gamelist, ec);
-    }
-}
-
-} // namespace
-
-void RefreshForkItems(const std::vector<std::filesystem::path>& folders) {
-    std::thread([folders] {
-        SetCurrentThreadName("ForkItems");
-        std::map<std::filesystem::path, LatestRelease> releases; // one check per program
-        std::set<std::filesystem::path> done_folders;
-        for (const auto& folder : folders) {
-            std::error_code ec;
-            if (!std::filesystem::is_directory(folder, ec) || !done_folders.insert(folder).second) {
-                continue;
-            }
-            for (const auto& entry : std::filesystem::directory_iterator(folder, ec)) {
-                if (ToLower(FS::PathToUTF8String(entry.path().extension())) != ".fork") {
-                    continue;
-                }
-                const auto serial = ReadForkItemSerial(entry.path());
-                if (!serial) {
-                    continue;
-                }
-                const auto configured = FindConfiguredEngine(*serial);
-                const bool external = configured.has_value();
-                const Engine engine =
-                    external ? configured->first : Engine{"interno", ExecutablePath()};
-                const auto program = external ? configured->second : ExecutablePath();
-                if (!releases.contains(program)) {
-                    releases[program] =
-                        FetchLatestRelease(engine, EngineGitHubRepo(engine, program));
-                }
-                SetGamelistDescription(
-                    folder, FS::PathToUTF8String(entry.path().filename()),
-                    FS::PathToUTF8String(entry.path().stem()),
-                    ForkItemDescription(*serial, engine, program, external, releases[program]));
-            }
-        }
-    }).detach();
 }
 
 /// Synchronizes saved games between shadPS4 / RetroBat (home_dir / 1000 / savedata) and the port's
@@ -2462,6 +2170,213 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
     LOG_ERROR(Common, "Other programs for a game are only started on Windows");
     return false;
 #endif
+}
+
+bool StartedByRetroBat() {
+#ifdef _WIN32
+    return LaunchedFromRetroBat();
+#else
+    return false;
+#endif
+}
+
+namespace {
+
+/// RetroBat's own folder (with emulationstation\.emulationstation), above this executable.
+std::filesystem::path RetroBatFolder() {
+    std::error_code ec;
+    for (auto dir = ExecutablePath().parent_path(); !dir.empty() && dir != dir.parent_path();
+         dir = dir.parent_path()) {
+        if (std::filesystem::exists(dir / "emulationstation" / ".emulationstation", ec)) {
+            return dir;
+        }
+    }
+    return {};
+}
+
+std::string XmlUnescape(std::string text) {
+    static const std::pair<const char*, const char*> entities[] = {
+        {"&quot;", "\""}, {"&apos;", "'"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&amp;", "&"}};
+    for (const auto& [from, to] : entities) {
+        for (size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + 1)) {
+            text.replace(at, std::strlen(from), to);
+        }
+    }
+    return text;
+}
+
+} // namespace
+
+std::string RetroBatGameOption(const std::filesystem::path& game, const std::string& option) {
+    const auto root = RetroBatFolder();
+    if (root.empty()) {
+        return {};
+    }
+    // The ROM RetroBat started: the folder of an eboot.bin, or the file itself (a .zar).
+    auto rom = game;
+    if (ToLower(FS::PathToUTF8String(rom.filename())) == "eboot.bin") {
+        rom = rom.parent_path();
+    }
+    const std::string system = ToLower(FS::PathToUTF8String(rom.parent_path().filename()));
+    const std::string key = system + "[\"" + FS::PathToUTF8String(rom.filename()) + "\"]." + option;
+    // es_settings.cfg lines: <string name="ps4[&quot;Game.ps4&quot;].option" value="1" />
+    std::ifstream in{root / "emulationstation" / ".emulationstation" / "es_settings.cfg"};
+    std::string line;
+    static const std::regex entry{R"re(name="([^"]*)"\s+value="([^"]*)")re"};
+    while (std::getline(in, line)) {
+        std::smatch m;
+        if (std::regex_search(line, m, entry) && XmlUnescape(m[1].str()) == key) {
+            return XmlUnescape(m[2].str());
+        }
+    }
+    return {};
+}
+
+namespace {
+
+/// The games each kind of engine runs, for RetroBat's list of forks.
+std::string GamesOfKind(const std::string& kind) {
+    if (kind == "spartanport")
+        return "God of War III";
+    if (kind == "shadps4-release")
+        return "inFAMOUS Second Son";
+    if (kind == "uncharted")
+        return "Uncharted";
+    if (kind == "bloodborne")
+        return "Bloodborne";
+    if (kind == "kyty-astro")
+        return "ASTRO BOT, ASTRO's PLAYROOM";
+    if (kind == "kyty-souls")
+        return "Demon's Souls";
+    if (kind == "interno")
+        return "los demás juegos de PS4";
+    return {};
+}
+
+std::string AttributeEscape(const std::string& text) {
+    std::string out;
+    for (const char c : text) {
+        switch (c) {
+        case '&':
+            out += "&amp;";
+            break;
+        case '<':
+            out += "&lt;";
+            break;
+        case '>':
+            out += "&gt;";
+            break;
+        case '"':
+            out += "&quot;";
+            break;
+        case '\n':
+            out += "&#10;";
+            break;
+        default:
+            out += c;
+        }
+    }
+    return out;
+}
+
+/// Replaces the feature with `value` under the PS4 emulator in es_features.cfg (or adds it).
+void SetFeature(std::string& xml, const std::string& value, const std::string& feature) {
+    constexpr std::string_view anchor = "<emulator name=\"shadps4\">";
+    const auto emulator = xml.find(anchor);
+    if (emulator == std::string::npos) {
+        return;
+    }
+    const auto found = xml.find("value=\"" + value + "\"", emulator);
+    const auto emulator_end = xml.find("</emulator>", emulator);
+    if (found != std::string::npos && found < emulator_end) {
+        const auto begin = xml.rfind("<feature", found);
+        const auto end = xml.find("</feature>", found);
+        if (begin != std::string::npos && end != std::string::npos) {
+            xml.replace(begin, end + 10 - begin, feature);
+            return;
+        }
+    }
+    xml.insert(emulator + anchor.size(), "\r\n    " + feature);
+}
+
+} // namespace
+
+void RefreshRetroBatForkOptions() {
+    const auto root = RetroBatFolder();
+    if (root.empty()) {
+        return;
+    }
+    std::thread([root] {
+        SetCurrentThreadName("RetroBatForks");
+        // One line per installed fork: its version, the latest on GitHub and what to do.
+        std::vector<std::pair<Engine, std::filesystem::path>> programs;
+        std::set<std::filesystem::path> seen;
+        const auto folder = ExecutableFolder();
+        for (const auto& [serial, engine] : LoadTable(folder)) {
+            if (engine.kind == "interno" || engine.program.empty()) {
+                continue;
+            }
+            const auto program = ResolveProgramPath(folder, engine.program);
+            std::error_code ec;
+            if (std::filesystem::exists(program, ec) && seen.insert(program).second) {
+                programs.emplace_back(engine, program);
+            }
+        }
+        programs.emplace_back(Engine{"interno", ExecutablePath()}, ExecutablePath());
+        std::string info;
+        bool any_update = false;
+        for (const auto& [engine, program] : programs) {
+            const bool own = engine.kind == "interno";
+            const std::string installed = own ? CleanEmulatorVersion() : EngineVersion(program);
+            const std::string name = own ? std::string{"ForkStation"} : EngineName(engine, program);
+            const auto release = FetchLatestRelease(engine, EngineGitHubRepo(engine, program));
+            std::string status;
+            if (!release.ok) {
+                status = "no se pudo consultar GitHub";
+            } else if (IsNewerVersion(engine, installed, release.version)) {
+                status = "NUEVA VERSIÓN " + release.version + " DISPONIBLE";
+                any_update = true;
+            } else {
+                status = "al día";
+            }
+            info += fmt::format("• {} ({}): {} — {}\n", name, GamesOfKind(engine.kind),
+                                installed.empty() ? "sin versión" : installed, status);
+        }
+        const std::time_t now = std::time(nullptr);
+        if (const std::tm* when = std::localtime(&now)) {
+            char date[32]{};
+            std::strftime(date, sizeof(date), "%d/%m/%Y %H:%M", when);
+            info += fmt::format("Comprobado el {}.", date);
+        }
+
+        const auto features = root / "emulationstation" / ".emulationstation" / "es_features.cfg";
+        std::string xml = ReadText(features);
+        if (xml.empty()) {
+            return;
+        }
+        SetFeature(xml, "brunoshadps4_fork",
+                   "<feature submenu=\"FORK\" name=\"ACTUALIZAR FORK DESDE SU GITHUB\" "
+                   "group=\"BRUNOSHADPS4\" value=\"brunoshadps4_fork\" description=\"" +
+                       AttributeEscape("Al iniciar el juego muestra la versión instalada de su "
+                                       "fork y la última publicada en su GitHub, y permite "
+                                       "actualizarlo antes de jugar.") +
+                       "\" order=\"1\">\r\n      <choice name=\"No\" value=\"0\"/>\r\n      "
+                       "<choice name=\"Sí, al iniciar el juego\" value=\"1\"/>\r\n    </feature>");
+        SetFeature(
+            xml, "brunoshadps4_forks_info",
+            "<feature submenu=\"FORK\" name=\"" +
+                std::string{any_update ? "VERSIÓN DE LOS FORKS: HAY ACTUALIZACIONES"
+                                       : "VERSIÓN DE LOS FORKS: TODOS AL DÍA"} +
+                "\" group=\"BRUNOSHADPS4\" value=\"brunoshadps4_forks_info\" description=\"" +
+                AttributeEscape(info) +
+                "\" order=\"2\">\r\n      <choice name=\"Ver descripción\" value=\"0\"/>\r\n"
+                "    </feature>");
+        const auto temp = features.parent_path() / "es_features.cfg.brunoshadps4";
+        std::error_code ec;
+        if (WriteText(temp, xml)) {
+            std::filesystem::rename(temp, features, ec);
+        }
+    }).detach();
 }
 
 } // namespace Common

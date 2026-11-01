@@ -26,6 +26,7 @@ extern char** environ;
 #include "common/thread.h"
 #include "core/emulator_settings.h"
 #include "core/ipc/ipc.h"
+#include "imgui/big_picture/big_picture.h"
 #ifdef ENABLE_DISCORD_RPC
 #include "common/discord_rpc_handler.h"
 #endif
@@ -453,6 +454,15 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
     // Games that run better on another program (motores.ini): started there; this process waits
     // until the game ends (front ends wait for it) and counts the time played.
+    // From RetroBat: its game options list the forks' versions (refreshed in the background), and
+    // "Actualizar fork desde su GitHub" set for this game opens its fork's update first.
+    if (Common::StartedByRetroBat()) {
+        Common::RefreshRetroBatForkOptions();
+        if (Common::RetroBatGameOption(file, "brunoshadps4_fork") == "1") {
+            BigPictureMode::LaunchUpdate(const_cast<char*>(executableName ? executableName : ""),
+                                         id);
+        }
+    }
     start_time = std::chrono::steady_clock::now();
     if (Common::LaunchExternalEngine(id, title, file)) {
         UpdatePlayTime(id);
@@ -616,18 +626,19 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     std::string remote_host = Common::GetRemoteNameFromLink();
     if (Common::g_is_release) {
         if (remote_host == "shadps4-emu" || remote_url.length() == 0) {
-            window_title = fmt::format("shadPS4 v{} | {}", Common::g_version, game_title);
+            window_title = fmt::format("ForkStation v{} | {}", Common::g_version, game_title);
         } else {
             window_title =
-                fmt::format("shadPS4 {}/v{} | {}", remote_host, Common::g_version, game_title);
+                fmt::format("ForkStation {}/v{} | {}", remote_host, Common::g_version, game_title);
         }
     } else {
         if (remote_host == "shadps4-emu" || remote_url.length() == 0) {
-            window_title = fmt::format("shadPS4 v{} {} {} | {}", Common::g_version,
+            window_title = fmt::format("ForkStation v{} {} {} | {}", Common::g_version,
                                        Common::g_scm_branch, Common::g_scm_desc, game_title);
         } else {
-            window_title = fmt::format("shadPS4 v{} {}/{} {} | {}", Common::g_version, remote_host,
-                                       Common::g_scm_branch, Common::g_scm_desc, game_title);
+            window_title =
+                fmt::format("ForkStation v{} {}/{} {} | {}", Common::g_version, remote_host,
+                            Common::g_scm_branch, Common::g_scm_desc, game_title);
         }
     }
     if (Common::LoadGameEdition(executableName ? executableName : "").active) {

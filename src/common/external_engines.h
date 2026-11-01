@@ -87,21 +87,24 @@ struct EngineUpdateHint {
 };
 
 /// Checks, in the background and once per engine, whether each game's engine has a newer release
-/// (brunoShadPs4 itself for the games that run here).
+/// (ForkStation itself for the games that run here).
 void StartUpdateChecks(const std::vector<std::string>& serials);
 
 /// The check's result for a game, once it has one.
 std::optional<EngineUpdateHint> GetUpdateHint(const std::string& serial);
 
-/// RetroBat's "Actualizar fork desde su GitHub" items: a small `.fork` file beside a game's ROM
-/// with a line `serial=<title ID>`. Started by RetroBat, the launcher opens only that game's
-/// update window. Returns the serial it names.
-std::optional<std::string> ReadForkItemSerial(const std::filesystem::path& fork_file);
+/// Whether RetroBat (its emulatorLauncher) started this program.
+bool StartedByRetroBat();
 
-/// Writes what is known about each `.fork` item's fork (name, installed and latest version,
-/// whether an update is available) into the description of its entry in the gamelist.xml beside
-/// it, for RetroBat to show. Checks GitHub for the ones not checked yet; runs in the background.
-void RefreshForkItems(const std::vector<std::filesystem::path>& folders);
+/// A game's option in RetroBat's "Opciones avanzadas del juego" (es_settings.cfg, the key
+/// `<system>["<rom>"].<option>`), for the game path RetroBat handed over; empty when unset.
+std::string RetroBatGameOption(const std::filesystem::path& game, const std::string& option);
+
+/// RetroBat's game options for the forks (es_features.cfg, PS4 emulator): "Actualizar fork desde
+/// su GitHub" (brunoshadps4_fork: No / Sí, al iniciar el juego) and "Versión de los forks", whose
+/// description lists each installed fork's version, the latest on GitHub and whether it is newer.
+/// Checks GitHub in the background; RetroBat shows the result from its next start.
+void RefreshRetroBatForkOptions();
 
 /// The render resolution of a game on another program, as "1080p", "1440p" or "4K" (empty when
 /// that program's resolution cannot be set from here), and the next one, written into that

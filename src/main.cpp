@@ -223,18 +223,6 @@ int main(int argc, char* argv[]) {
         EmulatorSettings.SetUserfaultfdTracking(true);
     }
 
-    // ---- RetroBat's "Actualizar fork desde su GitHub" item: only that game's update window ----
-    if (std::filesystem::path item{*gamePath};
-        (item.extension() == ".fork" || item.extension() == ".FORK") &&
-        std::filesystem::is_regular_file(item)) {
-        if (const auto serial = Common::ReadForkItemSerial(item)) {
-            BigPictureMode::LaunchUpdate(argv[0], *serial);
-            return 0;
-        }
-        LOG_ERROR(Debug, "No serial= line in {}", *gamePath);
-        return 1;
-    }
-
     // ---- Resolve game path or ID ----
     std::filesystem::path ebootPath(*gamePath);
     const auto archive_component_exists = [](const std::filesystem::path& p) -> bool {

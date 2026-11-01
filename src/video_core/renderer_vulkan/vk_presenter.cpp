@@ -1021,7 +1021,7 @@ void Presenter::DrawLoadingScreen(std::string_view stage, u32 done, u32 total) {
             ImGui::PopStyleColor();
         };
         const float middle = display.y * 0.5f;
-        centered("brunoShadPs4", middle - 150.0f * scale, 3.0f, IM_COL32(255, 255, 255, 255));
+        centered("ForkStation", middle - 150.0f * scale, 3.0f, IM_COL32(255, 255, 255, 255));
         centered(fmt::format("version {}", Common::g_version), middle - 80.0f * scale, 1.2f,
                  IM_COL32(150, 150, 160, 255));
         if (const auto title = Common::ElfInfo::Instance().Title(); !title.empty()) {
