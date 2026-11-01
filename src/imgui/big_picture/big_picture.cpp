@@ -867,7 +867,14 @@ struct Home {
     bool menu = false;       ///< the game's options menu is open
     int menu_item = 0;       ///< the pad's place in it
     ImVec2 menu_at{};        ///< where it opens (under the options button)
-    int menu_frame = -1;     ///< the frame it opened in (the press that opened it is not reused)
+    int menu_frame = -1;
+    // Transitions: 0..1 each, eased in after a change.
+    int shown_game = -1;  ///< the game whose details are shown
+    int shown_tab = -1;   ///< the tab whose tiles are shown
+    float info_in = 1.0f; ///< the details, after another game was chosen
+    float row_in = 1.0f;  ///< the tiles, after the tab changed
+    float menu_in = 0.0f; ///< the options menu, while it opens     ///< the frame it opened in (the
+                          ///< press that opened it is not reused)
 };
 Home home;
 
@@ -1609,6 +1616,22 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
             ? -1
             : tabList[std::clamp(home.selected[home.tab], 0, static_cast<int>(tabList.size()) - 1)];
 
+    // Transitions on a change of game or tab.
+    if (chosen != home.shown_game) {
+        home.shown_game = chosen;
+        home.info_in = 0.0f;
+    }
+    if (home.tab != home.shown_tab) {
+        home.shown_tab = home.tab;
+        home.row_in = 0.0f;
+    }
+    home.info_in = std::min(1.0f, home.info_in + dt * 4.0f);
+    home.row_in = std::min(1.0f, home.row_in + dt * 3.5f);
+    home.menu_in = home.menu ? std::min(1.0f, home.menu_in + dt * 7.0f) : 0.0f;
+    const auto ease = [](float t) { return 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t); };
+    const float info_a = ease(home.info_in);
+    const float row_a = ease(home.row_in);
+
     // The art: the chosen game's, faded in over the previous one.
     SDL_Texture* art = chosen >= 0 ? GameArt(gameIcons[chosen]) : nullptr;
     if (art != home.shown) {
@@ -1723,7 +1746,8 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         float& g = home.grow[i];
         g += ((k == cur ? 1.0f : 0.0f) - g) * std::min(1.0f, dt * 14.0f);
         const float side = tile + (big - tile) * g;
-        float tx = origin.x + margin + k * (tile + gap) - home.scroll;
+        float tx = origin.x + margin + k * (tile + gap) - home.scroll +
+                   (1.0f - row_a) * (60.0f + 18.0f * k) * s;
         if (k > cur) {
             tx += big - tile;
         }
@@ -1752,7 +1776,7 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         if (gameIcons[i].textureId) {
             const int a = k == cur || hovered ? 255 : 200;
             dl->AddImageRounded(gameIcons[i].textureId, tmin, tmax, {0, 0}, {1, 1},
-                                IM_COL32(a, a, a, 255), round);
+                                IM_COL32(a, a, a, static_cast<int>(255.0f * row_a)), round);
         } else {
             dl->AddRectFilled(tmin, tmax, IM_COL32(40, 46, 60, 255), round);
         }
@@ -1779,11 +1803,12 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
 
     // The chosen game: its name, console and engine, and its actions.
     const float info_x = origin.x + margin;
-    float y = origin.y + h * 0.40f;
+    float y = origin.y + h * 0.40f + (1.0f - info_a) * 18.0f * s;
     ImGui::SetWindowFontScale(s * 1.2f);
     ImGui::PushTextWrapPos(info_x + w * 0.48f - origin.x);
     ImGui::SetCursorScreenPos({info_x, y});
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 255, 255, 255));
+    ImGui::PushStyleColor(ImGuiCol_Text,
+                          IM_COL32(255, 255, 255, static_cast<int>(255.0f * info_a)));
     ImGui::TextWrapped("%s", game.title.c_str());
     ImGui::PopStyleColor();
     ImGui::PopTextWrapPos();
@@ -1792,7 +1817,8 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
     const std::string engine_line =
         fmt::format("{}   ·   {}", game.ps5 ? "PlayStation 5" : "PlayStation 4",
                     SplitDetail(game.details[0]).second);
-    dl->AddText({info_x, y}, IM_COL32(255, 255, 255, 190), engine_line.c_str());
+    dl->AddText({info_x, y}, IM_COL32(255, 255, 255, static_cast<int>(190.0f * info_a)),
+                engine_line.c_str());
     y += ImGui::CalcTextSize(engine_line.c_str()).y + 10.0f * s;
 
     const auto hint = Common::GetUpdateHint(game.serial);
@@ -1889,11 +1915,14 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         ImGui::SetWindowFontScale(s * 0.38f);
         const float head_h = ImGui::CalcTextSize(head.c_str()).y + 22.0f * s;
         width = std::max(width, ImGui::CalcTextSize(head.c_str()).x + 48.0f * s);
-        const ImVec2 at = home.menu_at;
+        const float menu_a = ease(home.menu_in);
+        const ImVec2 at{home.menu_at.x, home.menu_at.y - (1.0f - menu_a) * 14.0f * s};
+        dl->PushClipRectFullScreen();
+        const int panel_alpha = static_cast<int>(246.0f * menu_a);
         const ImVec2 max{at.x + width + pad * 2.0f, at.y + head_h + count * row_h + pad * 2.0f};
         dl->AddRectFilled({at.x + 6.0f * s, at.y + 8.0f * s}, {max.x + 6.0f * s, max.y + 8.0f * s},
                           IM_COL32(0, 0, 0, 90), 10.0f * s);
-        dl->AddRectFilled(at, max, IM_COL32(40, 42, 50, 246), 8.0f * s);
+        dl->AddRectFilled(at, max, IM_COL32(40, 42, 50, panel_alpha), 8.0f * s);
         dl->AddRect(at, max, IM_COL32(255, 255, 255, 30), 8.0f * s, 0, 1.0f * s);
         dl->AddText({at.x + pad + 14.0f * s, at.y + pad + 6.0f * s}, IM_COL32(255, 255, 255, 140),
                     head.c_str());
@@ -1950,6 +1979,7 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
                 home.menu = false;
             }
         }
+        dl->PopClipRect();
         if (chosen_row >= 0) {
             home.menu = false;
             switch (choices[chosen_row].action) {
