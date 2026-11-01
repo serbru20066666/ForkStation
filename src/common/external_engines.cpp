@@ -1515,8 +1515,10 @@ std::optional<ExternalEngineCard> DescribeExternalEngine(const std::string& seri
             card.details[1] = "Render 1368p + FSR 3.1";
             card.details[2] = "45 fps + generación (90)";
         } else if (engine.kind == "kyty-souls") {
-            card.details[0] = "Pantalla: " + ExternalEngineResolution(serial);
-            card.details[1] = "Ajustes de su run-windows.json";
+            const auto screen = ExternalEngineResolution(serial);
+            card.details[0] = "Pantalla: " + screen;
+            card.details[1] = std::string{"Render "} + (screen == "1080p" ? "1080p" : "1440p");
+            card.details[2] = "60 fps";
         } else {
             card.details[0] = "Ajustes: en su propio programa";
         }
@@ -2039,6 +2041,9 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
         SetKeyValue(program_folder / "brunoshadps4-kyty.ini", "pantalla", *choice);
         const std::string width = *choice == "4K" ? "3840" : *choice == "1440p" ? "2560" : "1920";
         const std::string height = *choice == "4K" ? "2160" : *choice == "1440p" ? "1440" : "1080";
+        // The game draws its 3D at 1440 at most (run-windows.ps1 -RenderHeight takes 720-1440) and
+        // scales it to its 4K output, so 1080p screens also render at 1080 (faster).
+        const std::string render = *choice == "1080p" ? "1080" : "1440";
         args = {"-NoProfile",
                 "-ExecutionPolicy",
                 "Bypass",
@@ -2052,6 +2057,8 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
                 width,
                 "-Height",
                 height,
+                "-RenderHeight",
+                render,
                 "-Fullscreen",
                 "-Language",
                 "3"};
