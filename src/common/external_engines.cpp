@@ -1381,7 +1381,7 @@ std::string ExternalEngineResolution(const std::string& serial) {
         const auto res = ReadKeyValue(folder / "bbport.ini", "output_res");
         return res == "3840x2160" ? "4K" : res == "2560x1440" ? "1440p" : "1080p";
     }
-    if (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") {
+    if (engine.kind == "kyty-astro" || engine.kind == "kyty-souls" || engine.kind == "tlg") {
         const auto res = ReadKeyValue(folder / "brunoshadps4-kyty.ini", "pantalla");
         return res == "1440p" ? "1440p" : res == "1080p" ? "1080p" : "4K";
     }
@@ -1414,7 +1414,7 @@ std::string CycleExternalEngineResolution(const std::string& serial) {
                     next == "4K"      ? "2160"
                     : next == "1440p" ? "1440"
                                       : "1080");
-    } else if (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") {
+    } else if (engine.kind == "kyty-astro" || engine.kind == "kyty-souls" || engine.kind == "tlg") {
         SetKeyValue(folder / "brunoshadps4-kyty.ini", "pantalla", next);
     } else if (engine.kind == "spartanport") {
         const auto ini = folder / "spartanport.ini";
@@ -1468,6 +1468,9 @@ std::optional<ExternalEngineCard> DescribeExternalEngine(const std::string& seri
             card.details[0] = "Pantalla: " + ExternalEngineResolution(serial);
             card.details[1] = "Render 1368p + FSR 3.1";
             card.details[2] = "45 fps + generación (90)";
+        } else if (engine.kind == "tlg") {
+            card.details[0] = "Pantalla: " + ExternalEngineResolution(serial);
+            card.details[1] = "Pantalla completa, en español";
         } else if (engine.kind == "kyty-souls") {
             const auto screen = ExternalEngineResolution(serial);
             card.details[0] = "Pantalla: " + screen;
@@ -2200,7 +2203,15 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
     } else if (engine.kind == "tlg") {
         // HayatoG's port plays straight away with --play; the game's files are in its own folder
         // (TLG_GAME_DIR below, so nothing is set up on the PC).
+        const auto choice =
+            ChooseResolution(title.empty() ? serial : title, ExternalEngineResolution(serial));
+        if (!choice) {
+            return WentBack(serial);
+        }
+        SetKeyValue(program_folder / "brunoshadps4-kyty.ini", "pantalla", *choice);
         args = {"--play"};
+        // Always full screen (exclusive), so no other window stays on top of the game.
+        SetKeyValue(program_folder / "user" / "tlg.ini", "display_mode", "fullscreen");
     } else if (engine.kind == "shadps4") {
         args = {"--game", FS::PathToUTF8String(eboot)};
     } else {
@@ -2216,6 +2227,13 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
     }
     if (engine.kind == "tlg") {
         SetEnvironmentVariableW(L"TLG_GAME_DIR", program_folder.wstring().c_str());
+        const auto res = ExternalEngineResolution(serial);
+        SetEnvironmentVariableW(L"TLG_RESOLUTION", res == "4K"      ? L"3840x2160"
+                                                   : res == "1440p" ? L"2560x1440"
+                                                                    : L"1920x1080");
+        // Spanish by default (the port starts in Brazilian Portuguese): Latin American on the
+        // US copy (CUSA03627, en / pt_BR / es_LA / fr_CA), Spain's on the European one.
+        SetEnvironmentVariableW(L"TLG_LANGUAGE", serial == "CUSA03627" ? L"es_LA" : L"es_ES");
     }
     std::filesystem::path run = program;
     if (engine.kind == "kyty-souls") {
