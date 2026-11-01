@@ -2024,7 +2024,8 @@ void TakeTheScreen(SDL_Window* window) {
     if (const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(SDL_GetDisplayForWindow(window))) {
         SDL_SetWindowFullscreenMode(window, mode);
     }
-    TakeTheScreen(window);
+    SDL_SetWindowFullscreen(window, true);
+    SDL_RaiseWindow(window);
     Common::BringWindowToFront(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
                                                       SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
 }
