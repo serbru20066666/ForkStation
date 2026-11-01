@@ -110,6 +110,8 @@ std::map<std::string, Engine> LoadTable(const std::filesystem::path& folder) {
     ParseLine(
         R"(PPSA01342,PPSA01341,PPSA01340 = kyty-souls | motores\DemonsSouls\kyty_emulator.exe)",
         table);
+    ParseLine(R"(CUSA03627,CUSA03745 = tlg | motores\TheLastGuardian\Play The Last Guardian.exe)",
+              table);
     std::ifstream in{folder / "motores.ini"};
     std::string line;
     while (in && std::getline(in, line)) {
@@ -253,6 +255,9 @@ std::string EngineName(const Engine& engine, const std::filesystem::path& progra
     if (engine.kind == "kyty-souls") {
         return "KytyPS5 Demon's Souls";
     }
+    if (engine.kind == "tlg") {
+        return "tlg_pc";
+    }
     return FS::PathToUTF8String(program.stem());
 }
 
@@ -277,6 +282,9 @@ std::string EngineGitHubRepo(const Engine& engine, const std::filesystem::path& 
     }
     if (engine.kind == "kyty-souls") {
         return "chenxiao07/KytyPS5";
+    }
+    if (engine.kind == "tlg") {
+        return "HayatoG/tlg_pc";
     }
     if (engine.kind == "shadps4") {
         const auto lower = ToLower(FS::PathToUTF8String(program));
@@ -941,12 +949,22 @@ constexpr std::array<const char*, 3> Resolutions{"1080p", "1440p", "4K"};
 
 /// Going back from a choice screen: to this emulator's launcher when the game was started from it
 /// (it sets BRUNO_FROM_LAUNCHER), otherwise back to whatever started this process (RetroBat).
+void ReturnToLauncher();
+
 bool WentBack(const std::string& serial) {
     LOG_INFO(Common, "{}: the player went back before playing", serial);
+    ReturnToLauncher();
+    return true;
+}
+
+/// Starts the launcher again when it started this game (it sets BRUNO_FROM_LAUNCHER).
+void ReturnToLauncher() {
 #ifdef _WIN32
     const char* from = std::getenv("BRUNO_FROM_LAUNCHER");
     if (from && from[0] == '1') {
         SetEnvironmentVariableW(L"BRUNO_FROM_LAUNCHER", nullptr);
+        // Back from a game: no start animation again.
+        SetEnvironmentVariableW(L"FORKSTATION_BACK", L"1");
         wchar_t path[MAX_PATH]{};
         GetModuleFileNameW(nullptr, path, MAX_PATH);
         std::wstring cmdline = L"\"" + std::wstring{path} + L"\"";
@@ -961,7 +979,6 @@ bool WentBack(const std::string& serial) {
         }
     }
 #endif
-    return true;
 }
 
 #ifdef _WIN32
@@ -1490,7 +1507,7 @@ std::string ReleaseTagPrefix(const Engine& /*engine*/) {
 
 /// KytyPS5 builds are named by their tag, compared as they are: any other tag is an update.
 bool TagVersioned(const Engine& engine) {
-    return engine.kind == "kyty-astro" || engine.kind == "kyty-souls";
+    return engine.kind == "kyty-astro" || engine.kind == "kyty-souls" || engine.kind == "tlg";
 }
 
 struct LatestRelease {
@@ -1503,12 +1520,49 @@ struct LatestRelease {
 /// The newest release of the engine's repository: its latest one, or for engines published as
 /// pre-releases (biggsymobile's Astro builds) or beside other releases (a tag prefix) the newest
 /// one in the list that is theirs.
-LatestRelease FetchLatestRelease(const Engine& engine, const std::string& repo) {
+/// GitHub answers 60 questions an hour without an account: what it said is kept for a while in
+/// the user folder (forkstation_github_cache.json), and used again when it cannot be asked.
+std::mutex g_github_cache_mutex;
+
+std::filesystem::path GitHubCachePath() {
+    return FS::GetUserPath(FS::PathType::UserDir) / "forkstation_github_cache.json";
+}
+
+std::string GitHubAnswer(const std::string& url, bool fresh) {
+    constexpr std::time_t max_age = 3 * 60 * 60;
+    const std::time_t now = std::time(nullptr);
+    std::scoped_lock lock{g_github_cache_mutex};
+    auto cache = ReadJsonFile(GitHubCachePath());
+    const auto cached = [&]() -> std::string {
+        if (cache.contains(url) && cache[url].is_object() && cache[url].contains("body")) {
+            return cache[url].value("body", std::string{});
+        }
+        return {};
+    };
+    if (!fresh && cache.contains(url) && cache[url].is_object() &&
+        now - cache[url].value("time", std::time_t{0}) < max_age) {
+        if (auto body = cached(); !body.empty()) {
+            return body;
+        }
+    }
+    std::string body = FetchUrlText(url);
+    if (body.empty() || body.find("\"tag_name\"") == std::string::npos) {
+        return cached(); // offline or over the limit: the last answer, if any
+    }
+    cache[url] = {{"time", now}, {"body", body}};
+    WriteText(GitHubCachePath(), cache.dump());
+    return body;
+}
+
+LatestRelease FetchLatestRelease(const Engine& engine, const std::string& repo,
+                                 bool fresh = false) {
     LatestRelease result;
     const std::string prefix = ReleaseTagPrefix(engine);
     const bool listed = engine.kind == "kyty-astro" || !prefix.empty();
-    const std::string body = FetchUrlText("https://api.github.com/repos/" + repo +
-                                          (listed ? "/releases?per_page=30" : "/releases/latest"));
+    const std::string body =
+        GitHubAnswer("https://api.github.com/repos/" + repo +
+                         (listed ? "/releases?per_page=30" : "/releases/latest"),
+                     fresh);
     if (body.empty()) {
         result.error = fmt::format("No se pudo conectar con GitHub ({}).", repo);
         return result;
@@ -1589,7 +1643,7 @@ void StartEngineUpdate(const std::string& serial, bool force_reinstall) {
 
     std::thread([=] {
         SetCurrentThreadName("EngineUpdater");
-        const auto release = FetchLatestRelease(engine, repo);
+        const auto release = FetchLatestRelease(engine, repo, true); // the button asks GitHub now
         if (!release.ok) {
             ModifyUpdateStatus([&](EngineUpdateStatus& st) {
                 st.active = false;
@@ -2141,6 +2195,9 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
                 "-Fullscreen",
                 "-Language",
                 "3"};
+    } else if (engine.kind == "tlg") {
+        // HayatoG's port starts the game folder kept in its own folder (its "Play" program).
+        args = {};
     } else if (engine.kind == "shadps4") {
         args = {"--game", FS::PathToUTF8String(eboot)};
     } else {
@@ -2160,11 +2217,10 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
         GetSystemDirectoryW(system, MAX_PATH);
         run = std::filesystem::path{system} / "WindowsPowerShell" / "v1.0" / "powershell.exe";
     }
-    const bool success = StartAndWait(
-        run, args, title.empty() ? serial : title, EngineName(engine, program),
-        (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") && LaunchedFromRetroBat(),
-        program_folder);
+    const bool success = StartAndWait(run, args, title.empty() ? serial : title,
+                                      EngineName(engine, program), true, program_folder);
     SyncGameSaves(serial, program_folder);
+    ReturnToLauncher();
     return success;
 #else
     LOG_ERROR(Common, "Other programs for a game are only started on Windows");
@@ -2248,6 +2304,8 @@ std::string GamesOfKind(const std::string& kind) {
         return "ASTRO BOT, ASTRO's PLAYROOM";
     if (kind == "kyty-souls")
         return "Demon's Souls";
+    if (kind == "tlg")
+        return "The Last Guardian";
     if (kind == "interno")
         return "los demás juegos de PS4";
     return {};

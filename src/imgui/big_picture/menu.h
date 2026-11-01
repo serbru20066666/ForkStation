@@ -193,22 +193,33 @@ inline bool Row(const char* id, Icon icon, const char* label, const char* value,
 
 /// The pad the player holds, for the buttons the hints show.
 enum class PadKind { Keyboard, PlayStation, Xbox };
-enum class PadButton { Confirm, Back, Action, Extra, Shoulders };
+enum class PadButton { Confirm, Back, Action, Extra, Shoulders, Options };
 
 /// A pad button as the player's pad prints it: PlayStation shapes in their colours, Xbox letters,
 /// or a keyboard key without a pad.
 inline void DrawPadButton(ImDrawList* dl, PadKind kind, PadButton button, ImVec2 c, float r) {
     if (kind == PadKind::Keyboard) {
-        const char* key = button == PadButton::Confirm  ? "Enter"
-                          : button == PadButton::Back   ? "Esc"
-                          : button == PadButton::Action ? "U"
-                          : button == PadButton::Extra  ? "S"
-                                                        : "Tab";
+        const char* key = button == PadButton::Options   ? "Menú"
+                          : button == PadButton::Confirm ? "Enter"
+                          : button == PadButton::Back    ? "Esc"
+                          : button == PadButton::Action  ? "U"
+                          : button == PadButton::Extra   ? "S"
+                                                         : "Tab";
         const ImVec2 ts = ImGui::CalcTextSize(key);
         const float w = std::max(r * 2.0f, ts.x + r);
         dl->AddRect({c.x - w * 0.5f, c.y - r}, {c.x + w * 0.5f, c.y + r},
                     IM_COL32(235, 238, 245, 230), r * 0.3f, 0, std::max(1.2f, r * 0.1f));
         dl->AddText({c.x - ts.x * 0.5f, c.y - ts.y * 0.5f}, IM_COL32(245, 246, 250, 255), key);
+        return;
+    }
+    if (button == PadButton::Options) {
+        // Three lines, as the options / menu buttons of both pads print them.
+        dl->AddCircleFilled(c, r, IM_COL32(20, 22, 28, 200));
+        dl->AddCircle(c, r, IM_COL32(235, 238, 245, 200), 0, std::max(1.2f, r * 0.09f));
+        for (const float dy : {-0.32f, 0.0f, 0.32f}) {
+            dl->AddLine({c.x - r * 0.42f, c.y + r * dy}, {c.x + r * 0.42f, c.y + r * dy},
+                        IM_COL32(235, 238, 245, 255), std::max(1.4f, r * 0.12f));
+        }
         return;
     }
     if (button == PadButton::Shoulders) {

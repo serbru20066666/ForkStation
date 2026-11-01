@@ -864,6 +864,10 @@ struct Home {
     std::vector<float> grow; ///< per game, 0..1: how far its tile is enlarged
     int zone = 1;            ///< the pad's row: 0 the top bar, 1 the tiles, 2 the actions
     int item = 0;            ///< the pad's place in the top bar or among the actions
+    bool menu = false;       ///< the game's options menu is open
+    int menu_item = 0;       ///< the pad's place in it
+    ImVec2 menu_at{};        ///< where it opens (under the options button)
+    int menu_frame = -1;     ///< the frame it opened in (the press that opened it is not reused)
 };
 Home home;
 
@@ -950,41 +954,6 @@ std::pair<std::string, std::string> SplitDetail(const std::string& text) {
         return {text.substr(0, colon), text.substr(colon + 2)};
     }
     return {{}, text};
-}
-
-/// A pill button drawn by hand (white for the main action, glass for the others).
-bool PillButton(const char* id, const char* label, ImVec2 pos, float height, bool primary,
-                bool dot = false, bool focused = false) {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 text = ImGui::CalcTextSize(label);
-    const float pad = height * 0.62f;
-    const ImVec2 size{text.x + pad * 2.0f + (dot ? height * 0.32f : 0.0f), height};
-    ImGui::SetCursorScreenPos(pos);
-    const bool pressed = ImGui::InvisibleButton(id, size);
-    const bool hovered = ImGui::IsItemHovered();
-    const ImVec2 max{pos.x + size.x, pos.y + size.y};
-    if (primary) {
-        dl->AddRectFilled(pos, max,
-                          hovered ? IM_COL32(255, 255, 255, 255) : IM_COL32(238, 240, 245, 255),
-                          height * 0.5f);
-    } else {
-        dl->AddRectFilled(pos, max,
-                          hovered ? IM_COL32(255, 255, 255, 70) : IM_COL32(255, 255, 255, 38),
-                          height * 0.5f);
-        dl->AddRect(pos, max, IM_COL32(255, 255, 255, 60), height * 0.5f, 0, 1.0f * uiScale);
-    }
-    dl->AddText({pos.x + pad, pos.y + (height - text.y) * 0.5f},
-                primary ? IM_COL32(12, 14, 20, 255) : IM_COL32(245, 246, 250, 255), label);
-    if (dot) {
-        dl->AddCircleFilled({max.x - pad * 0.75f, pos.y + height * 0.5f}, height * 0.11f,
-                            IM_COL32(255, 160, 30, 255));
-    }
-    if (focused) {
-        const float ring = height * 0.09f;
-        dl->AddRect({pos.x - ring, pos.y - ring}, {max.x + ring, max.y + ring},
-                    IM_COL32(255, 255, 255, 240), height * 0.5f + ring, 0, height * 0.05f);
-    }
-    return pressed;
 }
 
 } // namespace
@@ -1545,24 +1514,24 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
     sel = std::clamp(sel, 0, std::max(0, static_cast<int>(list.size()) - 1));
 
     // The pad and the keyboard, while no dialog is open.
-    const bool free_input =
-        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) && !showSettings && !browser.open;
+    const bool free_input = !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) && !showSettings &&
+                            !browser.open && !home.menu;
     bool play = false;
     if (free_input && !list.empty()) {
         const auto pressed = [](std::initializer_list<ImGuiKey> keys) {
             return std::ranges::any_of(keys,
                                        [](ImGuiKey k) { return ImGui::IsKeyPressed(k, true); });
         };
-        const int tabs = (lists[0].empty() ? 0 : 1) + (lists[1].empty() ? 0 : 1);
-        const int top_count = tabs + 2; // the tabs, adding games, about
-        const int action_count = gameIcons[list[sel]].external ? 2 : 3;
+
+        const int top_count = 2;    // adding games and about (the tabs: L1 / R1 only)
+        const int action_count = 2; // Play and the options
         if (pressed({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadLStickUp}) &&
             home.zone > 0) {
             --home.zone;
             home.item = home.zone == 0 ? 0 : home.item;
         }
         if (pressed({ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadLStickDown}) &&
-            home.zone < 2) {
+            home.zone < 1) {
             ++home.zone;
             home.item = 0;
         }
@@ -1598,19 +1567,24 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
             } else if (home.zone == 2) {
                 if (home.item == 0) {
                     play = true;
-                } else if (home.item == 1) {
-                    updateFor = list[sel];
                 } else {
-                    settingsFor = list[sel];
+                    home.menu = true;
+                    home.menu_frame = ImGui::GetFrameCount();
+                    home.menu_item = 0;
                 }
-            } else if (home.item < tabs) {
-                // The tabs that have games, in order.
-                home.tab = lists[0].empty() ? 1 : home.item;
-            } else if (home.item == tabs) {
+            } else if (home.item == 0) {
                 OpenFolderBrowser();
             } else {
                 openAbout = true;
             }
+        }
+        // Options (DualSense) or View / Back (Xbox) open the game's options, as on a console.
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_GamepadBack, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_Menu, false)) {
+            home.menu = true;
+            home.menu_frame = ImGui::GetFrameCount();
+            home.menu_item = 0;
         }
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && home.zone != 1) {
             home.zone = 1; // back to the games
@@ -1668,7 +1642,7 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
     // Top bar: the consoles on the left; adding games, the information and the clock on the right.
     float x = origin.x + margin;
     const float bar_y = origin.y + 26.0f * s;
-    int top_index = 0;
+
     const auto ring = [&](ImVec2 min, ImVec2 max, float rounding) {
         dl->AddRect({min.x - 8.0f * s, min.y - 6.0f * s}, {max.x + 8.0f * s, max.y + 6.0f * s},
                     IM_COL32(255, 255, 255, 240), rounding, 0, 2.5f * s);
@@ -1687,10 +1661,7 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         dl->AddText({x, bar_y},
                     t == home.tab ? IM_COL32(255, 255, 255, 255) : IM_COL32(255, 255, 255, 130),
                     label);
-        if (home.zone == 0 && home.item == top_index) {
-            ring({x, bar_y}, {x + ts.x, bar_y + ts.y}, 8.0f * s);
-        }
-        ++top_index;
+
         if (t == home.tab) {
             dl->AddRectFilled({x, bar_y + ts.y + 6.0f * s}, {x + ts.x, bar_y + ts.y + 9.0f * s},
                               IM_COL32(255, 255, 255, 230), 2.0f * s);
@@ -1724,17 +1695,17 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
             ImGui::SetWindowFontScale(s * 0.6f);
             return pressed;
         };
-        const int tabs_drawn = top_index;
+
         if (round_button("##about", "i")) {
             openAbout = true;
         }
-        if (home.zone == 0 && home.item == tabs_drawn + 1) {
+        if (home.zone == 0 && home.item == 1) {
             ring(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), r + 6.0f * s);
         }
         if (round_button("##add", "+")) {
             OpenFolderBrowser();
         }
-        if (home.zone == 0 && home.item == tabs_drawn) {
+        if (home.zone == 0 && home.item == 0) {
             ring(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), r + 6.0f * s);
         }
     }
@@ -1773,7 +1744,7 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         const bool hovered = ImGui::IsItemHovered();
         ImGui::PopID();
         const float round = 14.0f * s;
-        if (k == cur) {
+        if (k == cur && home.zone == 1) {
             dl->AddRectFilled({tmin.x - 6.0f * s, tmin.y - 6.0f * s},
                               {tmax.x + 6.0f * s, tmax.y + 6.0f * s}, IM_COL32(255, 255, 255, 40),
                               round + 6.0f * s);
@@ -1785,7 +1756,7 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         } else {
             dl->AddRectFilled(tmin, tmax, IM_COL32(40, 46, 60, 255), round);
         }
-        if (k == cur) {
+        if (k == cur && home.zone == 1) {
             dl->AddRect({tmin.x - 3.0f * s, tmin.y - 3.0f * s},
                         {tmax.x + 3.0f * s, tmax.y + 3.0f * s}, IM_COL32(255, 255, 255, 255),
                         round + 3.0f * s, 0, 3.0f * s);
@@ -1842,22 +1813,9 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
 
     // The actions: Play (white), Update (with a dot when there is a newer release), Settings.
     ImGui::SetWindowFontScale(s * 0.5f);
-    const float button_h = 58.0f * s;
     float bx = info_x;
-    if (PillButton("##play", "  Jugar  ", {bx, y}, button_h, true, false,
-                   home.zone == 2 && home.item == 0)) {
-        play = true;
-    }
-    bx += ImGui::GetItemRectSize().x + 14.0f * s;
-    if (PillButton("##update", "Actualizar", {bx, y}, button_h, false,
-                   hint && (hint->available || hint->missing), home.zone == 2 && home.item == 1)) {
-        updateFor = chosen;
-    }
-    bx += ImGui::GetItemRectSize().x + 14.0f * s;
-    if (!game.external && PillButton("##settings", "Ajustes", {bx, y}, button_h, false, false,
-                                     home.zone == 2 && home.item == 2)) {
-        settingsFor = chosen;
-    }
+    // Playing: the cross on the game, or the options menu (Options / View), which opens here.
+    home.menu_at = {bx, y};
 
     // The details: glass cards along the bottom.
     ImGui::SetWindowFontScale(s * 0.48f);
@@ -1894,14 +1852,126 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         cx += card_w + 14.0f * s;
     }
 
+    // The game's options: a menu under the options button, in the look of a console's.
+    if (home.menu) {
+        struct Choice {
+            const char* label;
+            std::string value;
+            int action; // 0 play, 1 update, 2 settings
+            bool dot;
+        };
+        std::vector<Choice> choices;
+        choices.push_back({"Jugar", "", 0, false});
+        std::string update_value = "Comprobar";
+        if (hint && hint->missing) {
+            update_value = "Instalar " + hint->latest_version;
+        } else if (hint && hint->available) {
+            update_value = "Nueva: " + hint->latest_version;
+        } else if (hint && hint->checked) {
+            update_value = "Al día";
+        }
+        choices.push_back({"Actualizar fork desde su GitHub", update_value, 1,
+                           hint && (hint->available || hint->missing)});
+        if (!game.external) {
+            choices.push_back({"Ajustes del juego", "", 2, false});
+        }
+        const int count = static_cast<int>(choices.size());
+        home.menu_item = std::clamp(home.menu_item, 0, count - 1);
+        ImGui::SetWindowFontScale(s * 0.48f);
+        const float row_h = 56.0f * s;
+        const float pad = 10.0f * s;
+        float width = 0.0f;
+        for (const auto& c : choices) {
+            width = std::max(width, ImGui::CalcTextSize(c.label).x +
+                                        ImGui::CalcTextSize(c.value.c_str()).x + 150.0f * s);
+        }
+        const std::string head = SplitDetail(game.details[0]).second;
+        ImGui::SetWindowFontScale(s * 0.38f);
+        const float head_h = ImGui::CalcTextSize(head.c_str()).y + 22.0f * s;
+        width = std::max(width, ImGui::CalcTextSize(head.c_str()).x + 48.0f * s);
+        const ImVec2 at = home.menu_at;
+        const ImVec2 max{at.x + width + pad * 2.0f, at.y + head_h + count * row_h + pad * 2.0f};
+        dl->AddRectFilled({at.x + 6.0f * s, at.y + 8.0f * s}, {max.x + 6.0f * s, max.y + 8.0f * s},
+                          IM_COL32(0, 0, 0, 90), 10.0f * s);
+        dl->AddRectFilled(at, max, IM_COL32(40, 42, 50, 246), 8.0f * s);
+        dl->AddRect(at, max, IM_COL32(255, 255, 255, 30), 8.0f * s, 0, 1.0f * s);
+        dl->AddText({at.x + pad + 14.0f * s, at.y + pad + 6.0f * s}, IM_COL32(255, 255, 255, 140),
+                    head.c_str());
+        ImGui::SetWindowFontScale(s * 0.48f);
+        int chosen_row = -1;
+        for (int i = 0; i < count; ++i) {
+            const ImVec2 rmin{at.x + pad, at.y + pad + head_h + i * row_h};
+            const ImVec2 rmax{max.x - pad, rmin.y + row_h};
+            ImGui::SetCursorScreenPos(rmin);
+            ImGui::PushID(i);
+            if (ImGui::InvisibleButton("##choice", {rmax.x - rmin.x, row_h})) {
+                chosen_row = i;
+            }
+            if (ImGui::IsItemHovered() && io.MouseDelta.x != 0.0f) {
+                home.menu_item = i;
+            }
+            ImGui::PopID();
+            if (i == home.menu_item) {
+                dl->AddRectFilled(rmin, rmax, IM_COL32(255, 255, 255, 18), 6.0f * s);
+                dl->AddRect(rmin, rmax, IM_COL32(225, 228, 236, 235), 6.0f * s, 0, 2.0f * s);
+            }
+            const ImVec2 ls = ImGui::CalcTextSize(choices[i].label);
+            dl->AddText({rmin.x + 22.0f * s, rmin.y + (row_h - ls.y) * 0.5f},
+                        IM_COL32(242, 243, 247, 255), choices[i].label);
+            if (!choices[i].value.empty()) {
+                const ImVec2 vs = ImGui::CalcTextSize(choices[i].value.c_str());
+                dl->AddText({rmax.x - 20.0f * s - vs.x, rmin.y + (row_h - vs.y) * 0.5f},
+                            choices[i].dot ? IM_COL32(255, 190, 110, 255)
+                                           : IM_COL32(255, 255, 255, 150),
+                            choices[i].value.c_str());
+            }
+        }
+        const auto pressed = [](std::initializer_list<ImGuiKey> keys) {
+            return std::ranges::any_of(keys,
+                                       [](ImGuiKey k) { return ImGui::IsKeyPressed(k, true); });
+        };
+        if (!ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) && !showSettings &&
+            ImGui::GetFrameCount() != home.menu_frame) {
+            if (pressed(
+                    {ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadLStickDown})) {
+                home.menu_item = std::min(home.menu_item + 1, count - 1);
+            }
+            if (pressed({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadLStickUp})) {
+                home.menu_item = std::max(home.menu_item - 1, 0);
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_Enter, false)) {
+                chosen_row = home.menu_item;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) ||
+                ImGui::IsKeyPressed(ImGuiKey_GamepadBack, false)) {
+                home.menu = false;
+            }
+        }
+        if (chosen_row >= 0) {
+            home.menu = false;
+            switch (choices[chosen_row].action) {
+            case 0:
+                play = true;
+                break;
+            case 1:
+                updateFor = chosen;
+                break;
+            default:
+                settingsFor = chosen;
+                break;
+            }
+        }
+    }
+
     // The pad's buttons, bottom right (as the connected pad prints them).
     {
         ImGui::SetWindowFontScale(s * 0.38f);
         std::vector<std::pair<Menu::PadButton, const char*>> hints{
             {Menu::PadButton::Confirm, "Jugar"}, {Menu::PadButton::Action, "Actualizar"}};
-        if (!game.external) {
-            hints.push_back({Menu::PadButton::Extra, "Ajustes"});
-        }
+        hints.push_back({Menu::PadButton::Options, "Opciones"});
         if (!lists[1 - home.tab].empty()) {
             hints.push_back({Menu::PadButton::Shoulders, "PS4 / PS5"});
         }
@@ -2209,7 +2279,7 @@ void Launch(char* executableName, bool sameProcess) {
         SDL_SetWindowSize(window, static_cast<int>(want_w * uiScale),
                           static_cast<int>(want_h * uiScale));
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-        SDL_MaximizeWindow(window); // the home screen fills the screen, like a console's
+        SDL_SetWindowFullscreen(window, true); // the home screen fills the screen, like a console's
     };
     auto applySettings = [&] {
         GetGameIconInfo(gameIcons);
@@ -2229,7 +2299,8 @@ void Launch(char* executableName, bool sameProcess) {
     // The first start (or no games yet): the guide through the setup.
     {
         std::error_code ec;
-        intro.active = !single_game.active && updateOnlySerial.empty();
+        const char* back = std::getenv("FORKSTATION_BACK");
+        intro.active = !single_game.active && updateOnlySerial.empty() && !(back && back[0] == '1');
         onboarding.active = !single_game.active && updateOnlySerial.empty() &&
                             (!std::filesystem::exists(OnboardingFlag(), ec) || gameIcons.empty());
     }
@@ -2560,6 +2631,11 @@ void Launch(char* executableName, bool sameProcess) {
                 onboarding = {};
                 onboarding.active = true;
                 ImGui::CloseCurrentPopup();
+            }
+            ry += rh;
+            if (Menu::Row("##about_quit", Menu::Icon::Close, "Salir de ForkStation", "", lx, ry, lw,
+                          rh, false)) {
+                done = true;
             }
             ry += rh;
             const bool closed =
