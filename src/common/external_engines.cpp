@@ -2210,8 +2210,15 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
         }
         SetKeyValue(program_folder / "brunoshadps4-kyty.ini", "pantalla", *choice);
         args = {"--play"};
-        // Always full screen (exclusive), so no other window stays on top of the game.
-        SetKeyValue(program_folder / "user" / "tlg.ini", "display_mode", "fullscreen");
+        // Always full screen (exclusive), so no other window stays on top of the game: its
+        // launcher writes the game's tlg.ini from its own settings.json at every start.
+        if (const auto settings = AppDataFile("tlg-launcher/settings.json"); !settings.empty()) {
+            auto json = ReadJsonFile(settings);
+            json["display_mode"] = "fullscreen";
+            std::error_code ec;
+            std::filesystem::create_directories(settings.parent_path(), ec);
+            WriteText(settings, json.dump(2));
+        }
     } else if (engine.kind == "shadps4") {
         args = {"--game", FS::PathToUTF8String(eboot)};
     } else {
