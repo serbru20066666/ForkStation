@@ -13,6 +13,7 @@
 #include <fmt/ranges.h>
 
 #include "common/arch.h"
+#include "common/external_engines.h"
 #include "common/key_manager.h"
 #include "common/logging/log.h"
 #include "common/memory_patcher.h"
@@ -220,6 +221,18 @@ int main(int argc, char* argv[]) {
 
     if (userfaultfd) {
         EmulatorSettings.SetUserfaultfdTracking(true);
+    }
+
+    // ---- RetroBat's "Actualizar fork desde su GitHub" item: only that game's update window ----
+    if (std::filesystem::path item{*gamePath};
+        (item.extension() == ".fork" || item.extension() == ".FORK") &&
+        std::filesystem::is_regular_file(item)) {
+        if (const auto serial = Common::ReadForkItemSerial(item)) {
+            BigPictureMode::LaunchUpdate(argv[0], *serial);
+            return 0;
+        }
+        LOG_ERROR(Debug, "No serial= line in {}", *gamePath);
+        return 1;
     }
 
     // ---- Resolve game path or ID ----

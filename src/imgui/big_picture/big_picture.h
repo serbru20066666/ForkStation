@@ -30,6 +30,9 @@ struct IconInfo {
 };
 
 void Launch(char* executableName, bool sameProcess);
+/// Opens only the update window of the game's fork (RetroBat's "Actualizar fork desde su GitHub"
+/// items) and returns when it is closed.
+void LaunchUpdate(char* executableName, const std::string& serial);
 void GetGameIconInfo(std::vector<IconInfo>& icons);
 SDL_Texture* LoadSdlTextureData(std::vector<u8> data);
 SDL_Texture* LoadSdlTextureDataFromFile(std::filesystem::path filePath);

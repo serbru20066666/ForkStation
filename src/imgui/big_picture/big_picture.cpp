@@ -47,6 +47,9 @@ std::vector<IconInfo> gameIcons = {};
 float uiScale = 1.0f;
 SDL_Renderer* renderer;
 
+/// LaunchUpdate's game: the window opens straight on its fork's update and closes with it.
+std::string updateOnlySerial;
+
 namespace {
 
 std::string CleanEmulatorVersion() {
@@ -629,6 +632,40 @@ void SetGameIcons(std::vector<IconInfo>& gameIcons, int& settingsFor, int& sugge
         ImGui::SetWindowFontScale(uiScale);
         ImGui::PopClipRect();
 
+        // What the check at start-up found: a badge on the cover, and the Update button lit.
+        const auto hint = Common::GetUpdateHint(gameIcons[i].serial);
+        const bool must_update = hint && hint->missing;
+        const bool should_update = hint && hint->available;
+        if (must_update || should_update) {
+            const char* badge = must_update ? "Debe instalarse" : "Actualización recomendada";
+            ImGui::SetWindowFontScale(uiScale * 0.68f);
+            const ImVec2 text = ImGui::CalcTextSize(badge);
+            const float bx = 9.0f * uiScale;
+            const float by = 4.0f * uiScale;
+            const ImVec2 bmax{cover_max.x - 8.0f * uiScale, cover_max.y - 8.0f * uiScale};
+            const ImVec2 bmin{bmax.x - text.x - bx * 2.0f, bmax.y - text.y - by * 2.0f};
+            draw_list->AddRectFilled(bmin, bmax,
+                                     must_update ? IM_COL32(200, 60, 50, 235) : IM_COL32(230, 150, 20, 235),
+                                     8.0f * uiScale);
+            draw_list->AddText({bmin.x + bx, bmin.y + by}, IM_COL32_WHITE, badge);
+            ImGui::SetWindowFontScale(uiScale);
+            if (ImGui::IsMouseHoveringRect(bmin, bmax)) {
+                ImGui::SetTooltip(
+                    "%s", must_update
+                              ? fmt::format("El motor no está instalado. Pulsa Actualizar para "
+                                            "instalar {}.",
+                                            hint->latest_version)
+                                    .c_str()
+                              : fmt::format("Instalada: {}\nNueva: {}\nPulsa Actualizar.",
+                                            hint->installed_version, hint->latest_version)
+                                    .c_str());
+            }
+        }
+        const auto update_button = [&] {
+            return (must_update || should_update) ? Theme::AccentButton(Tr("Update"))
+                                                  : Theme::Button(Tr("Update"));
+        };
+
         ImGui::SetCursorScreenPos({cover_min.x, pos.y + card.y - pad - frame});
         if (gameIcons[i].external) {
             // External fork/port: Play + Update from official GitHub releases.
@@ -636,7 +673,7 @@ void SetGameIcons(std::vector<IconInfo>& gameIcons, int& settingsFor, int& sugge
                                 ImVec2(14.0f * uiScale, ImGui::GetStyle().FramePadding.y));
             play |= Theme::AccentButton(Tr("Play"));
             ImGui::SameLine(0.0f, 8.0f * uiScale);
-            if (Theme::Button(Tr("Update"))) {
+            if (update_button()) {
                 updateFor = i;
             }
             ImGui::PopStyleVar();
@@ -661,7 +698,7 @@ void SetGameIcons(std::vector<IconInfo>& gameIcons, int& settingsFor, int& sugge
                 settingsFor = i;
             }
             ImGui::SameLine(0.0f, btn_gap);
-            if (Theme::Button(Tr("Update"))) {
+            if (update_button()) {
                 updateFor = i;
             }
             ImGui::PopStyleVar();
@@ -718,6 +755,17 @@ SDL_Texture* LoadSdlTextureDataFromFile(std::filesystem::path filePath) {
     std::vector<u8> data =
         std::vector<u8>(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
     return LoadSdlTextureData(data);
+}
+
+/// The game folders, where RetroBat's "Actualizar fork desde su GitHub" items (.fork) are.
+std::vector<std::filesystem::path> GameFolders() {
+    std::vector<std::filesystem::path> folders;
+    for (const auto& installLoc : EmulatorSettings.GetAllGameInstallDirs()) {
+        if (installLoc.enabled) {
+            folders.push_back(installLoc.path);
+        }
+    }
+    return folders;
 }
 
 void GetGameIconInfo(std::vector<IconInfo>& icons) {
@@ -801,6 +849,23 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
     KeepSingleGame(icons);
     FindBackground(icons);
     FillGameDetails(icons);
+    // Once per session, in the background: which engines have a newer release on GitHub.
+    std::vector<std::string> serials;
+    for (const auto& icon : icons) {
+        serials.push_back(icon.serial);
+    }
+    Common::StartUpdateChecks(serials);
+    // And what RetroBat's update items say about each fork.
+    static bool forkItemsRefreshed = false;
+    if (!forkItemsRefreshed) {
+        forkItemsRefreshed = true;
+        Common::RefreshForkItems(GameFolders());
+    }
+}
+
+void LaunchUpdate(char* executableName, const std::string& serial) {
+    updateOnlySerial = serial;
+    Launch(executableName, false);
 }
 
 void Launch(char* executableName, bool sameProcess) {
@@ -1019,6 +1084,14 @@ void Launch(char* executableName, bool sameProcess) {
             Common::StartEngineUpdate(gameIcons[updateFor].serial, false);
             ImGui::OpenPopup(Tr("Update engine"));
         }
+        // Opened for one game's fork (from RetroBat): its update starts right away.
+        static bool updateOnlyStarted = false;
+        if (!updateOnlySerial.empty() && !updateOnlyStarted) {
+            updateOnlyStarted = true;
+            updateRefreshed = false;
+            Common::StartEngineUpdate(updateOnlySerial, false);
+            ImGui::OpenPopup(Tr("Update engine"));
+        }
 
         // Engine update modal popup (official GitHub releases)
         ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
@@ -1033,6 +1106,9 @@ void Launch(char* executableName, bool sameProcess) {
             if (st.finished && !updateRefreshed) {
                 FillGameDetails(gameIcons);
                 updateRefreshed = true;
+                if (st.success) {
+                    Common::RefreshForkItems(GameFolders()); // RetroBat's items show the new version
+                }
             }
             ImGui::SetWindowFontScale(uiScale * 1.35f);
             ImGui::TextUnformatted(st.engine_name.empty() ? Tr("Update engine")
@@ -1072,9 +1148,17 @@ void Launch(char* executableName, bool sameProcess) {
                     }
                     ImGui::SameLine(0.0f, 10.0f * uiScale);
                 }
-                if (Theme::AccentButton(Tr("Close")) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                const bool closed = Theme::AccentButton(Tr("Close"));
+                if (ImGui::IsWindowAppearing() || !ImGui::IsAnyItemFocused()) {
+                    ImGui::SetItemDefaultFocus(); // the pad's A closes it
+                }
+                if (closed || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+                    ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
                     Common::ClearEngineUpdateStatus();
                     ImGui::CloseCurrentPopup();
+                    if (!updateOnlySerial.empty()) {
+                        done = true; // back to RetroBat
+                    }
                 }
             }
             ImGui::EndPopup();

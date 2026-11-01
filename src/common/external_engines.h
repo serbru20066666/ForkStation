@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace Common {
 
@@ -75,6 +76,32 @@ EngineUpdateStatus GetEngineUpdateStatus();
 
 /// Dismisses the finished update status.
 void ClearEngineUpdateStatus();
+
+/// What the launcher found about a game's engine on GitHub when it opened.
+struct EngineUpdateHint {
+    bool checked = false;   ///< GitHub answered for this engine
+    bool missing = false;   ///< the engine is not installed: it has to be
+    bool available = false; ///< a newer version than the installed one
+    std::string installed_version;
+    std::string latest_version;
+};
+
+/// Checks, in the background and once per engine, whether each game's engine has a newer release
+/// (brunoShadPs4 itself for the games that run here).
+void StartUpdateChecks(const std::vector<std::string>& serials);
+
+/// The check's result for a game, once it has one.
+std::optional<EngineUpdateHint> GetUpdateHint(const std::string& serial);
+
+/// RetroBat's "Actualizar fork desde su GitHub" items: a small `.fork` file beside a game's ROM
+/// with a line `serial=<title ID>`. Started by RetroBat, the launcher opens only that game's
+/// update window. Returns the serial it names.
+std::optional<std::string> ReadForkItemSerial(const std::filesystem::path& fork_file);
+
+/// Writes what is known about each `.fork` item's fork (name, installed and latest version,
+/// whether an update is available) into the description of its entry in the gamelist.xml beside
+/// it, for RetroBat to show. Checks GitHub for the ones not checked yet; runs in the background.
+void RefreshForkItems(const std::vector<std::filesystem::path>& folders);
 
 /// The render resolution of a game on another program, as "1080p", "1440p" or "4K" (empty when
 /// that program's resolution cannot be set from here), and the next one, written into that

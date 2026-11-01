@@ -193,6 +193,11 @@ bool WriteText(const std::filesystem::path& path, const std::string& text) {
     return static_cast<bool>(out);
 }
 
+std::string ReadText(const std::filesystem::path& path) {
+    std::ifstream in{path, std::ios::binary};
+    return {std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+}
+
 nlohmann::json ReadJsonFile(const std::filesystem::path& path) {
     if (std::ifstream in{path}; in) {
         auto json = nlohmann::json::parse(in, nullptr, false);
@@ -265,6 +270,9 @@ std::string EngineGitHubRepo(const Engine& engine, const std::filesystem::path& 
     }
     if (engine.kind == "kyty-astro") {
         return "biggsymobile-png/KytyPS5";
+    }
+    if (engine.kind == "kyty-souls") {
+        return "chenxiao07/KytyPS5";
     }
     if (engine.kind == "shadps4") {
         const auto lower = ToLower(FS::PathToUTF8String(program));
@@ -723,6 +731,72 @@ private:
     int held = 0;
     std::map<SDL_JoystickID, SDL_Gamepad*> pads;
 };
+
+/// A KytyPS5 engine on another drive than Windows' (RetroBat's hard disk) keeps its shader cache
+/// (_PipelineCache, a few GB read and written while the game streams) on this PC's own drive:
+/// %LOCALAPPDATA%\brunoShadPs4\shader-cache\<engine folder>, linked from the engine folder.
+/// On a hard disk the game's reads waited 100-500 ms behind the cache's (KytyPS5 issue #91). The
+/// cache is made for this PC's graphics card and driver anyway; the copy the engine folder had is
+/// kept beside it (_PipelineCache.disco) and fills the cache on a PC that has none yet.
+void PlaceShaderCacheOnLocalDrive(const std::filesystem::path& engine_folder) {
+    const wchar_t* local_appdata = _wgetenv(L"LOCALAPPDATA");
+    if (!local_appdata || !*local_appdata) {
+        return;
+    }
+    std::error_code ec;
+    const auto local =
+        std::filesystem::path{local_appdata} / "brunoShadPs4" / "shader-cache" / engine_folder.filename();
+    const auto root_of = [](const std::filesystem::path& p) {
+        return ToLower(FS::PathToUTF8String(std::filesystem::absolute(p).root_name()));
+    };
+    if (root_of(engine_folder) == root_of(local)) {
+        return; // the engine is on Windows' drive already
+    }
+    const auto cache = engine_folder / "_PipelineCache";
+    const auto kept = engine_folder / "_PipelineCache.disco";
+    // Already linked here: done. A link of another PC (its target missing here) is replaced.
+    if (std::filesystem::is_symlink(cache, ec) || (GetFileAttributesW(cache.c_str()) != INVALID_FILE_ATTRIBUTES &&
+                                                   (GetFileAttributesW(cache.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT))) {
+        if (std::filesystem::is_directory(local, ec) && std::filesystem::equivalent(cache, local, ec)) {
+            return;
+        }
+        RemoveDirectoryW(cache.c_str()); // the link only, never what it points to
+    } else if (std::filesystem::is_directory(cache, ec)) {
+        std::filesystem::rename(cache, kept, ec);
+        if (ec) {
+            LOG_WARNING(Common, "Shader cache stays in {}: {}", FS::PathToUTF8String(cache), ec.message());
+            return;
+        }
+    }
+    std::filesystem::create_directories(local, ec);
+    // A new PC's cache starts from the copy kept in the engine folder.
+    if (std::filesystem::is_empty(local, ec) && std::filesystem::is_directory(kept, ec)) {
+        std::filesystem::copy(kept, local,
+                              std::filesystem::copy_options::recursive |
+                                  std::filesystem::copy_options::skip_existing,
+                              ec);
+    }
+    std::wstring cmd = L"cmd.exe /d /c mklink /J \"" + cache.wstring() + L"\" \"" + local.wstring() + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    DWORD code = 1;
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
+                       &pi)) {
+        WaitForSingleObject(pi.hProcess, 10000);
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    if (code != 0 && !std::filesystem::exists(cache, ec)) {
+        // No link: the engine keeps its own folder's cache as before.
+        std::filesystem::rename(kept, cache, ec);
+        LOG_WARNING(Common, "Shader cache could not be linked to {}", FS::PathToUTF8String(local));
+        return;
+    }
+    LOG_INFO(Common, "Shader cache of {} on this PC's drive: {}", FS::PathToUTF8String(engine_folder.filename()),
+             FS::PathToUTF8String(local));
+}
 
 bool StartAndWait(const std::filesystem::path& program, const std::vector<std::string>& args,
                   const std::string& title, const std::string& engine_name, bool pad_exit,
@@ -1543,6 +1617,82 @@ void ClearEngineUpdateStatus() {
     }
 }
 
+void MarkEngineCurrent(const std::filesystem::path& program, const std::string& version);
+
+namespace {
+
+/// Releases of an engine published in a repository that also has other releases start with this
+/// (none yet: every engine has a repository of its own).
+std::string ReleaseTagPrefix(const Engine& /*engine*/) {
+    return "";
+}
+
+/// KytyPS5 builds are named by their tag, compared as they are: any other tag is an update.
+bool TagVersioned(const Engine& engine) {
+    return engine.kind == "kyty-astro" || engine.kind == "kyty-souls";
+}
+
+struct LatestRelease {
+    bool ok = false;
+    nlohmann::json json;
+    std::string version;
+    std::string error;
+};
+
+/// The newest release of the engine's repository: its latest one, or for engines published as
+/// pre-releases (biggsymobile's Astro builds) or beside other releases (a tag prefix) the newest
+/// one in the list that is theirs.
+LatestRelease FetchLatestRelease(const Engine& engine, const std::string& repo) {
+    LatestRelease result;
+    const std::string prefix = ReleaseTagPrefix(engine);
+    const bool listed = engine.kind == "kyty-astro" || !prefix.empty();
+    const std::string body = FetchUrlText("https://api.github.com/repos/" + repo +
+                                          (listed ? "/releases?per_page=30" : "/releases/latest"));
+    if (body.empty()) {
+        result.error = fmt::format("No se pudo conectar con GitHub ({}).", repo);
+        return result;
+    }
+    const auto json = nlohmann::json::parse(body, nullptr, false);
+    nlohmann::json release;
+    if (listed && json.is_array()) {
+        for (const auto& item : json) {
+            if (item.is_object() && item.contains("tag_name") && item["tag_name"].is_string() &&
+                item["tag_name"].get<std::string>().starts_with(prefix)) {
+                release = item;
+                break;
+            }
+        }
+    } else if (json.is_object()) {
+        release = json;
+    }
+    if (!release.is_object() || !release.contains("tag_name") || !release["tag_name"].is_string()) {
+        result.error = prefix.empty()
+                           ? std::string{"Respuesta inesperada de la API de GitHub."}
+                           : fmt::format("{} no tiene ninguna versión publicada todavía.", repo);
+        return result;
+    }
+    const std::string tag_name = release.value("tag_name", std::string{});
+    const std::string rel_name = release.value("name", std::string{});
+    result.version = TagVersioned(engine) ? tag_name : ExtractVersionString(tag_name, rel_name);
+    result.json = std::move(release);
+    result.ok = true;
+    return result;
+}
+
+/// Whether `latest` is an update for `installed` (an empty installed version always is).
+bool IsNewerVersion(const Engine& engine, const std::string& installed, const std::string& latest) {
+    if (latest.empty()) {
+        return false;
+    }
+    if (installed.empty()) {
+        return true;
+    }
+    return TagVersioned(engine) ? installed != latest
+                                : ParseVersionTuple(installed) < ParseVersionTuple(latest);
+}
+
+} // namespace
+
 void StartEngineUpdate(const std::string& serial, bool force_reinstall) {
     {
         std::scoped_lock lock{g_update_mutex};
@@ -1578,49 +1728,27 @@ void StartEngineUpdate(const std::string& serial, bool force_reinstall) {
 
     std::thread([=] {
         SetCurrentThreadName("EngineUpdater");
-        // biggsymobile publishes its KytyPS5 Astro builds as pre-releases: the newest in the list.
-        const bool tag_versions = engine.kind == "kyty-astro";
-        const std::string api_url = "https://api.github.com/repos/" + repo +
-                                    (tag_versions ? "/releases?per_page=1" : "/releases/latest");
-        const std::string body = FetchUrlText(api_url);
-        if (body.empty()) {
+        const auto release = FetchLatestRelease(engine, repo);
+        if (!release.ok) {
             ModifyUpdateStatus([&](EngineUpdateStatus& st) {
                 st.active = false;
                 st.finished = true;
                 st.success = false;
-                st.message = fmt::format("No se pudo conectar con GitHub ({}).", repo);
+                st.message = release.error;
             });
             return;
         }
-
-        auto json = nlohmann::json::parse(body, nullptr, false);
-        if (tag_versions && json.is_array() && !json.empty()) {
-            json = nlohmann::json(json[0]);
-        }
-        if (json.is_discarded() || !json.is_object() || !json.contains("tag_name") || !json["tag_name"].is_string()) {
-            ModifyUpdateStatus([&](EngineUpdateStatus& st) {
-                st.active = false;
-                st.finished = true;
-                st.success = false;
-                st.message = "Respuesta inesperada de la API de GitHub.";
-            });
-            return;
-        }
-
-        const std::string tag_name = json.value("tag_name", std::string{});
-        const std::string rel_name = json.value("name", std::string{});
-        const std::string latest_ver =
-            tag_versions ? tag_name : ExtractVersionString(tag_name, rel_name);
+        const auto& json = release.json;
+        const std::string& latest_ver = release.version;
 
         ModifyUpdateStatus([&](EngineUpdateStatus& st) { st.latest_version = latest_ver; });
 
-        if (installed && !force_reinstall && !installed_ver.empty() && !latest_ver.empty() &&
-            (tag_versions ? installed_ver == latest_ver
-                          : ParseVersionTuple(installed_ver) >= ParseVersionTuple(latest_ver))) {
+        if (installed && !force_reinstall && !IsNewerVersion(engine, installed_ver, latest_ver)) {
             if (is_external) {
                 WriteText(target_dir / "VERSION", installed_ver + "\n");
                 InvalidateVersionCache(program);
             }
+            MarkEngineCurrent(program, installed_ver);
             ModifyUpdateStatus([&](EngineUpdateStatus& st) {
                 st.active = false;
                 st.finished = true;
@@ -1650,6 +1778,7 @@ void StartEngineUpdate(const std::string& serial, bool force_reinstall) {
                     lower.find("source") != std::string::npos ||
                     lower.find("macos") != std::string::npos ||
                     lower.find("linux") != std::string::npos ||
+                    lower.find("steamdeck") != std::string::npos ||
                     lower.find("appimage") != std::string::npos) {
                     continue;
                 }
@@ -1727,6 +1856,9 @@ void StartEngineUpdate(const std::string& serial, bool force_reinstall) {
             WriteText(target_dir / "VERSION", latest_ver + "\n");
             InvalidateVersionCache(program);
         }
+        if (is_external) {
+            MarkEngineCurrent(program, latest_ver);
+        }
 
         ModifyUpdateStatus([&](EngineUpdateStatus& st) {
             st.active = false;
@@ -1738,6 +1870,232 @@ void StartEngineUpdate(const std::string& serial, bool force_reinstall) {
             st.message = fmt::format("{} actualizado correctamente a la versión {}.", engine_name,
                                      latest_ver);
         });
+    }).detach();
+}
+
+namespace {
+std::mutex g_hints_mutex;
+std::map<std::string, EngineUpdateHint> g_hints;            // by serial
+std::map<std::string, std::filesystem::path> g_hint_engine; // the program each serial runs on
+bool g_checks_started = false;
+} // namespace
+
+/// After an update or a check that found it current, the games on that program are up to date.
+void MarkEngineCurrent(const std::filesystem::path& program, const std::string& version) {
+    std::scoped_lock lock{g_hints_mutex};
+    for (auto& [serial, hint] : g_hints) {
+        if (g_hint_engine[serial] == program) {
+            hint.missing = false;
+            hint.available = false;
+            hint.installed_version = version;
+        }
+    }
+}
+
+void StartUpdateChecks(const std::vector<std::string>& serials) {
+    struct Target {
+        Engine engine;
+        std::filesystem::path program;
+        bool external;
+        std::vector<std::string> serials;
+    };
+    std::map<std::filesystem::path, Target> targets;
+    {
+        std::scoped_lock lock{g_hints_mutex};
+        if (g_checks_started) {
+            return;
+        }
+        g_checks_started = true;
+        for (const auto& serial : serials) {
+            const auto configured = FindConfiguredEngine(serial);
+            const bool external = configured.has_value();
+            const Engine engine = external ? configured->first : Engine{"interno", ExecutablePath()};
+            const auto program = external ? configured->second : ExecutablePath();
+            auto& target = targets[program];
+            target.engine = engine;
+            target.program = program;
+            target.external = external;
+            target.serials.push_back(serial);
+            g_hint_engine[serial] = program;
+        }
+    }
+    std::thread([targets = std::move(targets)] {
+        SetCurrentThreadName("UpdateChecks");
+        for (const auto& [program, target] : targets) {
+            std::error_code ec;
+            const bool installed = std::filesystem::exists(program, ec);
+            const std::string installed_ver =
+                target.external ? (installed ? EngineVersion(program) : std::string{})
+                                : CleanEmulatorVersion();
+            const auto release =
+                FetchLatestRelease(target.engine, EngineGitHubRepo(target.engine, program));
+            if (!release.ok) {
+                LOG_INFO(Common, "Update check of {}: {}", FS::PathToUTF8String(program), release.error);
+                continue;
+            }
+            EngineUpdateHint hint;
+            hint.checked = true;
+            hint.missing = !installed;
+            hint.available = installed && IsNewerVersion(target.engine, installed_ver, release.version);
+            hint.installed_version = installed_ver;
+            hint.latest_version = release.version;
+            std::scoped_lock lock{g_hints_mutex};
+            for (const auto& serial : target.serials) {
+                g_hints[serial] = hint;
+            }
+        }
+    }).detach();
+}
+
+std::optional<EngineUpdateHint> GetUpdateHint(const std::string& serial) {
+    std::scoped_lock lock{g_hints_mutex};
+    const auto it = g_hints.find(serial);
+    if (it == g_hints.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+std::optional<std::string> ReadForkItemSerial(const std::filesystem::path& fork_file) {
+    std::ifstream in{fork_file};
+    std::string line;
+    while (std::getline(in, line)) {
+        line = Trim(line);
+        if (line.starts_with("serial=")) {
+            const auto serial = Trim(line.substr(7));
+            if (!serial.empty()) {
+                return serial;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+namespace {
+
+std::string XmlEscape(const std::string& text) {
+    std::string out;
+    for (const char c : text) {
+        switch (c) {
+        case '&':
+            out += "&amp;";
+            break;
+        case '<':
+            out += "&lt;";
+            break;
+        case '>':
+            out += "&gt;";
+            break;
+        default:
+            out += c;
+        }
+    }
+    return out;
+}
+
+/// The description of a game's `.fork` item: its fork, the installed and latest versions and
+/// what to do.
+std::string ForkItemDescription(const std::string& serial, const Engine& engine,
+                                const std::filesystem::path& program, bool external,
+                                const LatestRelease& release) {
+    std::error_code ec;
+    const bool installed = std::filesystem::exists(program, ec);
+    const std::string installed_ver =
+        external ? (installed ? EngineVersion(program) : std::string{}) : CleanEmulatorVersion();
+    const std::string name = external ? EngineName(engine, program) : std::string{"brunoShadPs4"};
+    std::string text = fmt::format("Fork: {} (github.com/{})\n", name, EngineGitHubRepo(engine, program));
+    text += fmt::format("Versión instalada: {}\n", installed_ver.empty() ? "no instalado" : installed_ver);
+    if (!release.ok) {
+        text += "Última versión en GitHub: no se pudo consultar (sin conexión).\n";
+    } else {
+        text += fmt::format("Última versión en GitHub: {}\n", release.version);
+        if (!installed) {
+            text += "DEBE INSTALARSE: abre este item para instalarlo.\n";
+        } else if (IsNewerVersion(engine, installed_ver, release.version)) {
+            text += "ACTUALIZACIÓN DISPONIBLE: abre este item para actualizar.\n";
+        } else {
+            text += "Al día: no hay actualizaciones.\n";
+        }
+    }
+    const std::time_t now = std::time(nullptr);
+    if (const std::tm* when = std::localtime(&now)) {
+        char date[32]{};
+        std::strftime(date, sizeof(date), "%d/%m/%Y %H:%M", when);
+        text += fmt::format("Comprobado: {}", date);
+    }
+    (void)serial;
+    return text;
+}
+
+/// Sets the description of the gamelist.xml entry for `file_name` (adding the entry with `name`
+/// if it has none), written to a temporary file first so RetroBat never reads half of it.
+void SetGamelistDescription(const std::filesystem::path& folder, const std::string& file_name,
+                            const std::string& name, const std::string& description) {
+    const auto gamelist = folder / "gamelist.xml";
+    std::string xml = ReadText(gamelist);
+    if (xml.empty()) {
+        xml = "<?xml version=\"1.0\"?>\n<gameList>\n</gameList>\n";
+    }
+    const std::string path_tag = "<path>./" + XmlEscape(file_name) + "</path>";
+    const std::string desc_tag = "<desc>" + XmlEscape(description) + "</desc>";
+    const auto at = xml.find(path_tag);
+    if (at == std::string::npos) {
+        const auto end = xml.rfind("</gameList>");
+        if (end == std::string::npos) {
+            return;
+        }
+        xml.insert(end, "\t<game>\n\t\t" + path_tag + "\n\t\t<name>" + XmlEscape(name) + "</name>\n\t\t" +
+                            desc_tag + "\n\t</game>\n");
+    } else {
+        const auto game_end = xml.find("</game>", at);
+        const auto desc_begin = xml.find("<desc>", at);
+        if (desc_begin != std::string::npos && desc_begin < game_end) {
+            const auto desc_end = xml.find("</desc>", desc_begin);
+            xml.replace(desc_begin, desc_end + 7 - desc_begin, desc_tag);
+        } else {
+            xml.insert(at + path_tag.size(), "\n\t\t" + desc_tag);
+        }
+    }
+    const auto temp = folder / "gamelist.xml.brunoshadps4";
+    if (WriteText(temp, xml)) {
+        std::error_code ec;
+        std::filesystem::rename(temp, gamelist, ec);
+    }
+}
+
+} // namespace
+
+void RefreshForkItems(const std::vector<std::filesystem::path>& folders) {
+    std::thread([folders] {
+        SetCurrentThreadName("ForkItems");
+        std::map<std::filesystem::path, LatestRelease> releases; // one check per program
+        std::set<std::filesystem::path> done_folders;
+        for (const auto& folder : folders) {
+            std::error_code ec;
+            if (!std::filesystem::is_directory(folder, ec) || !done_folders.insert(folder).second) {
+                continue;
+            }
+            for (const auto& entry : std::filesystem::directory_iterator(folder, ec)) {
+                if (ToLower(FS::PathToUTF8String(entry.path().extension())) != ".fork") {
+                    continue;
+                }
+                const auto serial = ReadForkItemSerial(entry.path());
+                if (!serial) {
+                    continue;
+                }
+                const auto configured = FindConfiguredEngine(*serial);
+                const bool external = configured.has_value();
+                const Engine engine = external ? configured->first : Engine{"interno", ExecutablePath()};
+                const auto program = external ? configured->second : ExecutablePath();
+                if (!releases.contains(program)) {
+                    releases[program] = FetchLatestRelease(engine, EngineGitHubRepo(engine, program));
+                }
+                SetGamelistDescription(folder, FS::PathToUTF8String(entry.path().filename()),
+                                       FS::PathToUTF8String(entry.path().stem()),
+                                       ForkItemDescription(*serial, engine, program, external,
+                                                           releases[program]));
+            }
+        }
     }).detach();
 }
 
@@ -2072,6 +2430,9 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
     SyncGameSaves(serial, program_folder);
 #ifdef _WIN32
     // kyty-souls starts through PowerShell; the job still holds the emulator it starts.
+    if (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") {
+        PlaceShaderCacheOnLocalDrive(program_folder);
+    }
     std::filesystem::path run = program;
     if (engine.kind == "kyty-souls") {
         wchar_t system[MAX_PATH]{};
