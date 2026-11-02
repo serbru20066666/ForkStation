@@ -2403,6 +2403,50 @@ void RemoveFeature(std::string& xml, const std::string& value) {
 
 } // namespace
 
+void SetRetroBatGameOption(const std::filesystem::path& game, const std::string& option,
+                            const std::string& value) {
+    const auto root = RetroBatFolder();
+    if (root.empty()) {
+        return;
+    }
+    auto rom = game;
+    if (ToLower(FS::PathToUTF8String(rom.filename())) == "eboot.bin") {
+        rom = rom.parent_path();
+    }
+    const std::string system = ToLower(FS::PathToUTF8String(rom.parent_path().filename()));
+    const std::string key = system + "[\"" + FS::PathToUTF8String(rom.filename()) + "\"]." + option;
+    const auto path = root / "emulationstation" / ".emulationstation" / "es_settings.cfg";
+    std::string xml = ReadText(path);
+    if (xml.empty()) {
+        return;
+    }
+    const std::string name_attr = "name=\"" + AttributeEscape(key) + "\"";
+    const auto name_at = xml.find(name_attr);
+    if (name_at != std::string::npos) {
+        const auto value_at = xml.find("value=\"", name_at);
+        const auto tag_end = xml.find('>', name_at);
+        if (value_at != std::string::npos && value_at < tag_end) {
+            const auto quote_start = value_at + 7;
+            const auto quote_end = xml.find('"', quote_start);
+            if (quote_end != std::string::npos) {
+                xml.replace(quote_start, quote_end - quote_start, AttributeEscape(value));
+            }
+        }
+    } else {
+        const auto close = xml.rfind("</config>");
+        if (close == std::string::npos) {
+            return;
+        }
+        xml.insert(close, "  <string " + name_attr + " value=\"" + AttributeEscape(value) +
+                               "\" />\r\n");
+    }
+    const auto temp = path.parent_path() / "es_settings.cfg.brunoshadps4";
+    std::error_code ec;
+    if (WriteText(temp, xml)) {
+        std::filesystem::rename(temp, path, ec);
+    }
+}
+
 void RefreshRetroBatForkOptions() {
     const auto root = RetroBatFolder();
     if (root.empty()) {
@@ -2425,9 +2469,11 @@ void RefreshRetroBatForkOptions() {
             "group=\"FORKSTATION\" value=\"brunoshadps4_fork\" description=\"" +
                 AttributeEscape("Al iniciar el juego muestra la versión instalada del fork de este "
                                 "juego y la última publicada en su GitHub, y permite actualizarlo "
-                                "antes de jugar.") +
+                                "antes de jugar. \"Comprobar ahora\" lo hace una sola vez, la "
+                                "próxima vez que se inicie el juego.") +
                 "\" order=\"1\">\r\n      <choice name=\"No\" value=\"0\"/>\r\n      "
-                "<choice name=\"Sí, al iniciar el juego\" value=\"1\"/>\r\n    </feature>");
+                "<choice name=\"Sí, al iniciar el juego\" value=\"1\"/>\r\n      "
+                "<choice name=\"Comprobar ahora\" value=\"2\"/>\r\n    </feature>");
         RemoveFeature(xml, "brunoshadps4_forks_info"); // old global list of every fork's version
         const auto temp = features.parent_path() / "es_features.cfg.brunoshadps4";
         std::error_code ec;

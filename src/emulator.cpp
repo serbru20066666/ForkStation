@@ -458,7 +458,12 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     // "Actualizar fork desde su GitHub" set for this game opens its fork's update first.
     if (Common::StartedByRetroBat()) {
         Common::RefreshRetroBatForkOptions();
-        if (Common::RetroBatGameOption(file, "brunoshadps4_fork") == "1") {
+        const auto fork_option = Common::RetroBatGameOption(file, "brunoshadps4_fork");
+        if (fork_option == "1" || fork_option == "2") {
+            if (fork_option == "2") {
+                // "Comprobar ahora": a one-shot check, not every launch like "1" below.
+                Common::SetRetroBatGameOption(file, "brunoshadps4_fork", "0");
+            }
             BigPictureMode::LaunchUpdate(const_cast<char*>(executableName ? executableName : ""),
                                          id);
         }

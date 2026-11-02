@@ -103,10 +103,14 @@ bool StartedByRetroBat();
 /// `<system>["<rom>"].<option>`), for the game path RetroBat handed over; empty when unset.
 std::string RetroBatGameOption(const std::filesystem::path& game, const std::string& option);
 
+/// Sets a game's option in RetroBat's "Opciones avanzadas del juego" (es_settings.cfg), for the
+/// game path RetroBat handed over.
+void SetRetroBatGameOption(const std::filesystem::path& game, const std::string& option,
+                            const std::string& value);
+
 /// RetroBat's game options for the forks (es_features.cfg, PS4 emulator): "Actualizar fork desde
-/// su GitHub" (brunoshadps4_fork: No / Sí, al iniciar el juego) and "Versión de los forks", whose
-/// description lists each installed fork's version, the latest on GitHub and whether it is newer.
-/// Checks GitHub in the background; RetroBat shows the result from its next start.
+/// su GitHub" (brunoshadps4_fork: No / Sí, al iniciar el juego / Comprobar ahora, a one-shot
+/// check). Checks GitHub in the background; RetroBat shows the result from its next start.
 void RefreshRetroBatForkOptions();
 
 /// The render resolution of a game on another program, as "1080p", "1440p" or "4K" (empty when
