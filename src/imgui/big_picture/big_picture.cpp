@@ -777,6 +777,11 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
                         EmulatorSettings.AddGameInstallDir(dir / "roms" / system);
                     }
                 }
+                // PS5 games on the fast drive sit one level deeper, in roms\ps5\fastgames (a
+                // junction): its own install dir, since the scan below is not recursive.
+                if (std::filesystem::is_directory(dir / "roms" / "ps5" / "fastgames", ec)) {
+                    EmulatorSettings.AddGameInstallDir(dir / "roms" / "ps5" / "fastgames");
+                }
                 break;
             }
         }

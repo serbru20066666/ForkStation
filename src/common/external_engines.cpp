@@ -2291,6 +2291,16 @@ std::filesystem::path RetroBatFolder() {
     return {};
 }
 
+/// RetroBat's system name for a ROM's parent folder: "fastgames" (PS5 games on the fast drive,
+/// one level under roms\ps5) counts as "ps5", since that is RetroBat's actual system for them.
+std::string RetroBatSystemOfRom(const std::filesystem::path& rom) {
+    std::string system = ToLower(FS::PathToUTF8String(rom.parent_path().filename()));
+    if (system == "fastgames") {
+        system = "ps5";
+    }
+    return system;
+}
+
 std::string XmlUnescape(std::string text) {
     static const std::pair<const char*, const char*> entities[] = {
         {"&quot;", "\""}, {"&apos;", "'"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&amp;", "&"}};
@@ -2314,7 +2324,7 @@ std::string RetroBatGameOption(const std::filesystem::path& game, const std::str
     if (ToLower(FS::PathToUTF8String(rom.filename())) == "eboot.bin") {
         rom = rom.parent_path();
     }
-    const std::string system = ToLower(FS::PathToUTF8String(rom.parent_path().filename()));
+    const std::string system = RetroBatSystemOfRom(rom);
     const std::string key = system + "[\"" + FS::PathToUTF8String(rom.filename()) + "\"]." + option;
     // es_settings.cfg lines: <string name="ps4[&quot;Game.ps4&quot;].option" value="1" />
     std::ifstream in{root / "emulationstation" / ".emulationstation" / "es_settings.cfg"};
@@ -2491,7 +2501,7 @@ void SetRetroBatGameOption(const std::filesystem::path& game, const std::string&
     if (ToLower(FS::PathToUTF8String(rom.filename())) == "eboot.bin") {
         rom = rom.parent_path();
     }
-    const std::string system = ToLower(FS::PathToUTF8String(rom.parent_path().filename()));
+    const std::string system = RetroBatSystemOfRom(rom);
     const std::string key = system + "[\"" + FS::PathToUTF8String(rom.filename()) + "\"]." + option;
     const auto path = root / "emulationstation" / ".emulationstation" / "es_settings.cfg";
     std::string xml = ReadText(path);
