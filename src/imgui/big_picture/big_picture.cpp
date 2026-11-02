@@ -847,6 +847,13 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
         serials.push_back(icon.serial);
     }
     Common::StartUpdateChecks(serials);
+    // In RetroBat, its game options say each fork's version and offer the update (written once
+    // per launch, in the background).
+    static bool retrobat_options = false;
+    if (!retrobat_options) {
+        retrobat_options = true;
+        Common::RefreshRetroBatForkOptions();
+    }
 }
 
 // ---- The home screen: one console's games as a row of tiles over the chosen game's art ----
