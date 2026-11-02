@@ -108,6 +108,11 @@ std::string RetroBatGameOption(const std::filesystem::path& game, const std::str
 void SetRetroBatGameOption(const std::filesystem::path& game, const std::string& option,
                             const std::string& value);
 
+/// Creates or repairs `roms\ps5\fastgames` (a junction to a folder on the drive labeled
+/// "1tbData", found by label so neither drive's letter matters). Call this before touching any
+/// PS5 ROM path. No-op when this program was not started by RetroBat.
+void EnsurePs5FastDriveLink();
+
 /// RetroBat's game options for the forks (es_features.cfg, PS4 emulator): "Actualizar fork desde
 /// su GitHub" (brunoshadps4_fork: No / Sí, al iniciar el juego / Comprobar ahora, a one-shot
 /// check). Checks GitHub in the background; RetroBat shows the result from its next start.

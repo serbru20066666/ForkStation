@@ -37,6 +37,7 @@ int main(int argc, char* argv[]) {
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
 #endif
+    Common::EnsurePs5FastDriveLink();
 
 #if defined(__APPLE__) && defined(ARCH_X86_64)
     // KosmicKrisp only supports Apple Silicon. Check that we are not running on an Intel Mac.

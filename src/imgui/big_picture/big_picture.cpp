@@ -763,6 +763,25 @@ SDL_Texture* LoadSdlTextureDataFromFile(std::filesystem::path filePath) {
 void GetGameIconInfo(std::vector<IconInfo>& icons) {
     icons.clear();
 
+    if (Common::StartedByRetroBat()) {
+        // installDirs can hold a stale drive letter (this program's own drive traveled to
+        // another PC): re-add RetroBat's roms\ps4 and roms\ps5, resolved fresh from where this
+        // program is actually running right now.
+        std::error_code ec;
+        auto dir = std::filesystem::path{Common::FS::GetUserPath(Common::FS::PathType::UserDir)};
+        for (int up = 0; up < 6 && !dir.empty() && dir != dir.parent_path();
+             ++up, dir = dir.parent_path()) {
+            if (std::filesystem::is_directory(dir / "roms", ec)) {
+                for (const char* system : {"ps4", "ps5"}) {
+                    if (std::filesystem::is_directory(dir / "roms" / system, ec)) {
+                        EmulatorSettings.AddGameInstallDir(dir / "roms" / system);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
     for (const auto& installLoc : EmulatorSettings.GetAllGameInstallDirs()) {
         if (installLoc.enabled && std::filesystem::exists(installLoc.path)) {
             for (const auto& entry : std::filesystem::directory_iterator(installLoc.path)) {

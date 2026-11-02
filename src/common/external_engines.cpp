@@ -2329,6 +2329,84 @@ std::string RetroBatGameOption(const std::filesystem::path& game, const std::str
     return {};
 }
 
+/// The root of the drive whose volume label matches (case-insensitive), or empty if none mounted
+/// right now. Lets a second drive travel with the RetroBat one without caring which letter either
+/// gets assigned on a given PC.
+std::filesystem::path FindDriveByLabel(const std::wstring& label) {
+#ifdef _WIN32
+    const DWORD mask = GetLogicalDrives();
+    for (wchar_t letter = L'A'; letter <= L'Z'; ++letter) {
+        if (!(mask & (1u << (letter - L'A')))) {
+            continue;
+        }
+        wchar_t root[] = {letter, L':', L'\\', L'\0'};
+        if (GetDriveTypeW(root) != DRIVE_FIXED && GetDriveTypeW(root) != DRIVE_REMOVABLE) {
+            continue;
+        }
+        wchar_t volume_name[MAX_PATH + 1]{};
+        if (GetVolumeInformationW(root, volume_name, MAX_PATH + 1, nullptr, nullptr, nullptr,
+                                  nullptr, 0) &&
+            _wcsicmp(volume_name, label.c_str()) == 0) {
+            return std::filesystem::path{root};
+        }
+    }
+#endif
+    return {};
+}
+
+/// PS5 games live in `roms\ps5\fastgames`, a junction to a folder on the faster of the two drives
+/// (its volume label, not its letter: both drives travel together and a letter can change PC to
+/// PC). Creates or repairs that junction so RetroBat and this program both just see the games
+/// under their normal, letter-independent `roms\ps5` folder.
+void EnsurePs5FastDriveLink() {
+#ifdef _WIN32
+    if (!StartedByRetroBat()) {
+        return;
+    }
+    const auto root = RetroBatFolder();
+    if (root.empty()) {
+        return;
+    }
+    const auto link = root / "roms" / "ps5" / "fastgames";
+    std::error_code ec;
+    if (std::filesystem::exists(link, ec)) {
+        return; // already there and its target resolves
+    }
+    // The fast drive's volume label (an exFAT SSD in this setup); see CLAUDE.md.
+    const auto fast_drive = FindDriveByLabel(L"1tbData");
+    if (fast_drive.empty()) {
+        LOG_WARNING(Common, "PS5 fast drive not found by label: its games won't show up until it "
+                            "is connected");
+        return;
+    }
+    const auto target = fast_drive / "ForkStation-PS5";
+    std::filesystem::create_directories(target, ec);
+    std::filesystem::create_directories(link.parent_path(), ec);
+    if (GetFileAttributesW(link.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        RemoveDirectoryW(link.c_str()); // a stale link (old letter): removes the link, not its target
+    }
+    std::wstring cmd = L"cmd.exe /d /c mklink /J \"" + link.wstring() + L"\" \"" +
+                       target.wstring() + L"\"";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    DWORD code = 1;
+    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                       nullptr, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, 10000);
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+    if (code == 0) {
+        LOG_INFO(Common, "PS5 games linked to {}", FS::PathToUTF8String(target));
+    } else {
+        LOG_WARNING(Common, "Could not link {} to {}", FS::PathToUTF8String(link),
+                    FS::PathToUTF8String(target));
+    }
+#endif
+}
+
 namespace {
 
 std::string AttributeEscape(const std::string& text) {
