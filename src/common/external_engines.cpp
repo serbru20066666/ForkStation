@@ -2331,27 +2331,6 @@ std::string RetroBatGameOption(const std::filesystem::path& game, const std::str
 
 namespace {
 
-/// The games each kind of engine runs, for RetroBat's list of forks.
-std::string GamesOfKind(const std::string& kind) {
-    if (kind == "spartanport")
-        return "God of War III";
-    if (kind == "shadps4-release")
-        return "inFAMOUS Second Son";
-    if (kind == "uncharted")
-        return "Uncharted";
-    if (kind == "bloodborne")
-        return "Bloodborne";
-    if (kind == "kyty-astro")
-        return "ASTRO BOT, ASTRO's PLAYROOM";
-    if (kind == "kyty-souls")
-        return "Demon's Souls";
-    if (kind == "tlg")
-        return "The Last Guardian";
-    if (kind == "interno")
-        return "los demás juegos de PS4";
-    return {};
-}
-
 std::string AttributeEscape(const std::string& text) {
     std::string out;
     for (const char c : text) {
@@ -2398,6 +2377,30 @@ void SetFeature(std::string& xml, const std::string& value, const std::string& f
     xml.insert(emulator + anchor.size(), "\r\n    " + feature);
 }
 
+/// Removes the feature with `value` under the PS4 emulator in es_features.cfg, if there (a clean
+/// migration away from a feature a past version wrote).
+void RemoveFeature(std::string& xml, const std::string& value) {
+    constexpr std::string_view anchor = "<emulator name=\"shadps4\">";
+    const auto emulator = xml.find(anchor);
+    if (emulator == std::string::npos) {
+        return;
+    }
+    const auto emulator_end = xml.find("</emulator>", emulator);
+    const auto found = xml.find("value=\"" + value + "\"", emulator);
+    if (found == std::string::npos || found >= emulator_end) {
+        return;
+    }
+    const auto begin = xml.rfind("<feature", found);
+    const auto end = xml.find("</feature>", found);
+    if (begin != std::string::npos && end != std::string::npos) {
+        auto stop = end + 10;
+        while (stop < xml.size() && (xml[stop] == '\r' || xml[stop] == '\n')) {
+            ++stop;
+        }
+        xml.erase(begin, stop - begin);
+    }
+}
+
 } // namespace
 
 void RefreshRetroBatForkOptions() {
@@ -2407,69 +2410,25 @@ void RefreshRetroBatForkOptions() {
     }
     std::thread([root] {
         SetCurrentThreadName("RetroBatForks");
-        // One line per installed fork: its version, the latest on GitHub and what to do.
-        std::vector<std::pair<Engine, std::filesystem::path>> programs;
-        std::set<std::filesystem::path> seen;
-        const auto folder = ExecutableFolder();
-        for (const auto& [serial, engine] : LoadTable(folder)) {
-            if (engine.kind == "interno" || engine.program.empty()) {
-                continue;
-            }
-            const auto program = ResolveProgramPath(folder, engine.program);
-            std::error_code ec;
-            if (std::filesystem::exists(program, ec) && seen.insert(program).second) {
-                programs.emplace_back(engine, program);
-            }
-        }
-        programs.emplace_back(Engine{"interno", ExecutablePath()}, ExecutablePath());
-        std::string info;
-        bool any_update = false;
-        for (const auto& [engine, program] : programs) {
-            const bool own = engine.kind == "interno";
-            const std::string installed = own ? CleanEmulatorVersion() : EngineVersion(program);
-            const std::string name = own ? std::string{"ForkStation"} : EngineName(engine, program);
-            const auto release = FetchLatestRelease(engine, EngineGitHubRepo(engine, program));
-            std::string status;
-            if (!release.ok) {
-                status = "no se pudo consultar GitHub";
-            } else if (IsNewerVersion(engine, installed, release.version)) {
-                status = "NUEVA VERSIÓN " + release.version + " DISPONIBLE";
-                any_update = true;
-            } else {
-                status = "al día";
-            }
-            info += fmt::format("• {} ({}): {} — {}\n", name, GamesOfKind(engine.kind),
-                                installed.empty() ? "sin versión" : installed, status);
-        }
-        const std::time_t now = std::time(nullptr);
-        if (const std::tm* when = std::localtime(&now)) {
-            char date[32]{};
-            std::strftime(date, sizeof(date), "%d/%m/%Y %H:%M", when);
-            info += fmt::format("Comprobado el {}.", date);
-        }
-
         const auto features = root / "emulationstation" / ".emulationstation" / "es_features.cfg";
         std::string xml = ReadText(features);
         if (xml.empty()) {
             return;
         }
-        SetFeature(xml, "brunoshadps4_fork",
-                   "<feature submenu=\"FORK\" name=\"ACTUALIZAR FORK DESDE SU GITHUB\" "
-                   "group=\"BRUNOSHADPS4\" value=\"brunoshadps4_fork\" description=\"" +
-                       AttributeEscape("Al iniciar el juego muestra la versión instalada de su "
-                                       "fork y la última publicada en su GitHub, y permite "
-                                       "actualizarlo antes de jugar.") +
-                       "\" order=\"1\">\r\n      <choice name=\"No\" value=\"0\"/>\r\n      "
-                       "<choice name=\"Sí, al iniciar el juego\" value=\"1\"/>\r\n    </feature>");
+        // The toggle: each game's own fork, checked and updated (if asked) right before it plays.
+        // es_features.cfg has no per-ROM text, so a list of every fork's version cannot be shown
+        // here scoped to the one game open; "Actualizar fork desde su GitHub" opens a page with
+        // just that game's own fork instead (removing the old all-forks summary below).
         SetFeature(
-            xml, "brunoshadps4_forks_info",
-            "<feature submenu=\"FORK\" name=\"" +
-                std::string{any_update ? "VERSIÓN DE LOS FORKS: HAY ACTUALIZACIONES"
-                                       : "VERSIÓN DE LOS FORKS: TODOS AL DÍA"} +
-                "\" group=\"BRUNOSHADPS4\" value=\"brunoshadps4_forks_info\" description=\"" +
-                AttributeEscape(info) +
-                "\" order=\"2\">\r\n      <choice name=\"Ver descripción\" value=\"0\"/>\r\n"
-                "    </feature>");
+            xml, "brunoshadps4_fork",
+            "<feature submenu=\"FORK\" name=\"ACTUALIZAR FORK DESDE SU GITHUB\" "
+            "group=\"FORKSTATION\" value=\"brunoshadps4_fork\" description=\"" +
+                AttributeEscape("Al iniciar el juego muestra la versión instalada del fork de este "
+                                "juego y la última publicada en su GitHub, y permite actualizarlo "
+                                "antes de jugar.") +
+                "\" order=\"1\">\r\n      <choice name=\"No\" value=\"0\"/>\r\n      "
+                "<choice name=\"Sí, al iniciar el juego\" value=\"1\"/>\r\n    </feature>");
+        RemoveFeature(xml, "brunoshadps4_forks_info"); // old global list of every fork's version
         const auto temp = features.parent_path() / "es_features.cfg.brunoshadps4";
         std::error_code ec;
         if (WriteText(temp, xml)) {

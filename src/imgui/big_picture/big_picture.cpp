@@ -2593,27 +2593,51 @@ void Launch(char* executableName, bool sameProcess) {
                 ry += rh;
             } else {
                 ry += 18.0f * ms;
-                if (st.up_to_date &&
-                    Menu::Row("##reinstall", Menu::Icon::Update, "Reinstalar la misma versión", "",
-                              lx, ry, lw, rh, false)) {
-                    updateRefreshed = false;
-                    Common::StartEngineUpdate(st.serial, true);
-                }
-                if (st.up_to_date) {
-                    ry += rh;
-                }
+                // Rows picked by the pad's own cursor (static_buttons), as every other menu here
+                // does: ImGui's built-in gamepad Nav (SetItemDefaultFocus + Button) does not
+                // reliably pick up a real pad in this window, only the keyboard and the mouse.
                 const char* close_label =
                     updateOnlySerial.empty() ? "Cerrar" : "Continuar al juego";
-                const bool closed = Menu::Row(
-                    "##close", updateOnlySerial.empty() ? Menu::Icon::Close : Menu::Icon::Play,
-                    close_label, "", lx, ry, lw, rh, false);
-                if (ImGui::IsWindowAppearing() || !ImGui::IsAnyItemFocused()) {
-                    ImGui::SetItemDefaultFocus(); // the pad's A closes it
+                const Menu::Icon close_icon =
+                    updateOnlySerial.empty() ? Menu::Icon::Close : Menu::Icon::Play;
+                const int count = st.up_to_date ? 2 : 1;
+                static int sel = 0;
+                sel = std::clamp(sel, 0, count - 1);
+                const auto pressed = [](std::initializer_list<ImGuiKey> keys) {
+                    return std::ranges::any_of(
+                        keys, [](ImGuiKey k) { return ImGui::IsKeyPressed(k, true); });
+                };
+                if (pressed({ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown,
+                             ImGuiKey_GamepadLStickDown})) {
+                    sel = std::min(sel + 1, count - 1);
                 }
-                if (closed || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+                if (pressed({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadLStickUp})) {
+                    sel = std::max(sel - 1, 0);
+                }
+                int row = 0;
+                bool activated = false;
+                if (st.up_to_date) {
+                    if (Menu::Row("##reinstall", Menu::Icon::Update, "Reinstalar la misma versión",
+                                  "", lx, ry, lw, rh, sel == row) ||
+                        (sel == row && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) ||
+                                        ImGui::IsKeyPressed(ImGuiKey_Enter, false)))) {
+                        updateRefreshed = false;
+                        Common::StartEngineUpdate(st.serial, true);
+                        sel = 0;
+                    }
+                    ry += rh;
+                    ++row;
+                }
+                if (Menu::Row("##close", close_icon, close_label, "", lx, ry, lw, rh, sel == row) ||
+                    (sel == row && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) ||
+                                    ImGui::IsKeyPressed(ImGuiKey_Enter, false)))) {
+                    activated = true;
+                }
+                if (activated || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
                     ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
                     Common::ClearEngineUpdateStatus();
                     ImGui::CloseCurrentPopup();
+                    sel = 0;
                     if (!updateOnlySerial.empty()) {
                         done = true; // back to RetroBat
                     }
