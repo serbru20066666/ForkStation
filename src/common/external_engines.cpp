@@ -2364,10 +2364,11 @@ std::filesystem::path FindDriveByLabel(const std::wstring& label) {
     return {};
 }
 
-/// PS5 games live in `roms\ps5\fastgames`, a junction to a folder on the faster of the two drives
-/// (its volume label, not its letter: both drives travel together and a letter can change PC to
-/// PC). Creates or repairs that junction so RetroBat and this program both just see the games
-/// under their normal, letter-independent `roms\ps5` folder.
+/// PS5 games live in `roms\ps5\fastgames`, a junction to RetroBat\roms\ps5 on the faster of the
+/// two drives (its volume label, not its letter: both drives travel together and a letter can
+/// change PC to PC). Creates or repairs that junction so RetroBat and this program both just see
+/// the games under their normal, letter-independent `roms\ps5` folder. A no-op on the fast
+/// drive's own RetroBat install, whose PS5 games are already local (no junction needed there).
 void EnsurePs5FastDriveLink() {
 #ifdef _WIN32
     if (!StartedByRetroBat()) {
@@ -2377,11 +2378,6 @@ void EnsurePs5FastDriveLink() {
     if (root.empty()) {
         return;
     }
-    const auto link = root / "roms" / "ps5" / "fastgames";
-    std::error_code ec;
-    if (std::filesystem::exists(link, ec)) {
-        return; // already there and its target resolves
-    }
     // The fast drive's volume label (an exFAT SSD in this setup); see CLAUDE.md.
     const auto fast_drive = FindDriveByLabel(L"1tbData");
     if (fast_drive.empty()) {
@@ -2389,7 +2385,16 @@ void EnsurePs5FastDriveLink() {
                             "is connected");
         return;
     }
-    const auto target = fast_drive / "ForkStation-PS5";
+    if (ToLower(FS::PathToUTF8String(std::filesystem::absolute(root).root_name())) ==
+        ToLower(FS::PathToUTF8String(fast_drive.root_name()))) {
+        return; // this IS the fast drive's own install: its PS5 games are already local
+    }
+    const auto link = root / "roms" / "ps5" / "fastgames";
+    std::error_code ec;
+    if (std::filesystem::exists(link, ec)) {
+        return; // already there and its target resolves
+    }
+    const auto target = fast_drive / "RetroBat" / "roms" / "ps5";
     std::filesystem::create_directories(target, ec);
     std::filesystem::create_directories(link.parent_path(), ec);
     if (GetFileAttributesW(link.c_str()) != INVALID_FILE_ATTRIBUTES) {
