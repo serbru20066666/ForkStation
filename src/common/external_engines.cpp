@@ -747,74 +747,87 @@ private:
     std::map<SDL_JoystickID, SDL_Gamepad*> pads;
 };
 
-/// A KytyPS5 engine on another drive than Windows' (RetroBat's hard disk) keeps its shader cache
-/// (_PipelineCache, a few GB read and written while the game streams) on this PC's own drive:
-/// %LOCALAPPDATA%\brunoShadPs4\shader-cache\<engine folder>, linked from the engine folder.
-/// On a hard disk the game's reads waited 100-500 ms behind the cache's (KytyPS5 issue #91). The
-/// cache is made for this PC's graphics card and driver anyway; the copy the engine folder had is
-/// kept beside it (_PipelineCache.disco) and fills the cache on a PC that has none yet.
-void PlaceShaderCacheOnLocalDrive(const std::filesystem::path& engine_folder) {
+/// kyty-astro and kyty-souls keep all of a game's data (binaries, config, save data) portable on
+/// whichever drive the user carries between PCs -- which may be exFAT (chosen for use on more than
+/// one machine or device), and exFAT cannot host a reparse point at all, proven while setting up
+/// RetroBat on one: every `mklink` hosted there fails, even though a link elsewhere targeting
+/// exFAT works fine. So when the engine sits on such a drive, its shader cache (_PipelineCache, a
+/// few GB read and written while the game streams) has nowhere fast to be linked to and ends up
+/// written straight to the portable drive -- the same slow-small-file-I/O situation KytyPS5 issue
+/// #91 exists to avoid (there, a hard disk; here, a filesystem with no journaling at all for it).
+///
+/// Rather than link _PipelineCache elsewhere, this keeps a lightweight mirror of the whole engine
+/// folder (binaries, config, everything except what is regenerated, PC-specific, or synced
+/// separately -- _PipelineCache, _PipelineCache.disco, _SaveData, user, logs, _DevLog, _TempData,
+/// _DownloadData, _Textures) under %LOCALAPPDATA%, refreshed from the portable copy whenever it
+/// has something newer, and returns that local folder for the engine to actually run from. Its
+/// _PipelineCache then lives on this PC's own drive without any filesystem link, starting from the
+/// copy the portable engine folder kept (_PipelineCache.disco) the first time a PC runs it. Save
+/// data is unaffected: SyncGameSaves reconciles a game's saves against the shared home directory
+/// regardless of which folder the engine actually ran from.
+std::filesystem::path LocalEngineRunFolder(const std::filesystem::path& engine_folder) {
     const wchar_t* local_appdata = _wgetenv(L"LOCALAPPDATA");
     if (!local_appdata || !*local_appdata) {
-        return;
+        return engine_folder;
     }
     std::error_code ec;
-    const auto local = std::filesystem::path{local_appdata} / "brunoShadPs4" / "shader-cache" /
-                       engine_folder.filename();
     const auto root_of = [](const std::filesystem::path& p) {
         return ToLower(FS::PathToUTF8String(std::filesystem::absolute(p).root_name()));
     };
+    const auto local = std::filesystem::path{local_appdata} / "brunoShadPs4" / "engine-run" /
+                       engine_folder.filename();
     if (root_of(engine_folder) == root_of(local)) {
-        return; // the engine is on Windows' drive already
+        return engine_folder; // the engine is on Windows' drive already
     }
-    const auto cache = engine_folder / "_PipelineCache";
-    const auto kept = engine_folder / "_PipelineCache.disco";
-    // Already linked here: done. A link of another PC (its target missing here) is replaced.
-    if (std::filesystem::is_symlink(cache, ec) ||
-        (GetFileAttributesW(cache.c_str()) != INVALID_FILE_ATTRIBUTES &&
-         (GetFileAttributesW(cache.c_str()) & FILE_ATTRIBUTE_REPARSE_POINT))) {
-        if (std::filesystem::is_directory(local, ec) &&
-            std::filesystem::equivalent(cache, local, ec)) {
-            return;
-        }
-        RemoveDirectoryW(cache.c_str()); // the link only, never what it points to
-    } else if (std::filesystem::is_directory(cache, ec)) {
-        std::filesystem::rename(cache, kept, ec);
-        if (ec) {
-            LOG_WARNING(Common, "Shader cache stays in {}: {}", FS::PathToUTF8String(cache),
-                        ec.message());
-            return;
-        }
-    }
+    static const std::set<std::string> skip{
+        "_pipelinecache", "_pipelinecache.disco", "_savedata", "user",
+        "logs",           "_devlog",              "_tempdata", "_downloaddata",
+        "_textures"};
     std::filesystem::create_directories(local, ec);
-    // A new PC's cache starts from the copy kept in the engine folder.
-    if (std::filesystem::is_empty(local, ec) && std::filesystem::is_directory(kept, ec)) {
-        std::filesystem::copy(kept, local,
+    std::error_code iter_ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(
+             engine_folder, std::filesystem::directory_options::skip_permission_denied, iter_ec);
+         !iter_ec && it != std::filesystem::recursive_directory_iterator();
+         it.increment(iter_ec)) {
+        std::error_code op_ec;
+        const auto rel = std::filesystem::relative(it->path(), engine_folder, op_ec);
+        if (op_ec || rel.empty()) {
+            continue;
+        }
+        const auto top = ToLower(FS::PathToUTF8String(*rel.begin()));
+        if (skip.contains(top)) {
+            if (it.depth() == 0 && it->is_directory(op_ec)) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        const auto dest = local / rel;
+        if (it->is_directory(op_ec)) {
+            std::filesystem::create_directories(dest, op_ec);
+            continue;
+        }
+        std::error_code exist_ec, write_ec;
+        const bool newer = !std::filesystem::exists(dest, exist_ec) ||
+                           std::filesystem::last_write_time(it->path(), op_ec) >
+                               std::filesystem::last_write_time(dest, write_ec);
+        if (newer) {
+            std::filesystem::create_directories(dest.parent_path(), op_ec);
+            std::filesystem::copy_file(it->path(), dest,
+                                       std::filesystem::copy_options::overwrite_existing, op_ec);
+        }
+    }
+    // A new PC's cache starts from the copy the portable engine folder kept.
+    const auto local_cache = local / "_PipelineCache";
+    const auto seed = engine_folder / "_PipelineCache.disco";
+    if (!std::filesystem::exists(local_cache, ec) && std::filesystem::is_directory(seed, ec)) {
+        std::filesystem::copy(seed, local_cache,
                               std::filesystem::copy_options::recursive |
                                   std::filesystem::copy_options::skip_existing,
                               ec);
     }
-    std::wstring cmd =
-        L"cmd.exe /d /c mklink /J \"" + cache.wstring() + L"\" \"" + local.wstring() + L"\"";
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    DWORD code = 1;
-    if (CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
-                       nullptr, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, 10000);
-        GetExitCodeProcess(pi.hProcess, &code);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    }
-    if (code != 0 && !std::filesystem::exists(cache, ec)) {
-        // No link: the engine keeps its own folder's cache as before.
-        std::filesystem::rename(kept, cache, ec);
-        LOG_WARNING(Common, "Shader cache could not be linked to {}", FS::PathToUTF8String(local));
-        return;
-    }
-    LOG_INFO(Common, "Shader cache of {} on this PC's drive: {}",
+    LOG_INFO(Common, "{} runs from this PC's drive: {}",
              FS::PathToUTF8String(engine_folder.filename()), FS::PathToUTF8String(local));
+    return local;
 }
 
 bool StartAndWait(const std::filesystem::path& program, const std::vector<std::string>& args,
@@ -1993,6 +2006,13 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
     }
     const auto& [engine, program] = *found;
     const auto program_folder = program.parent_path();
+    // kyty-astro and kyty-souls run from a local mirror of the engine folder when it is not
+    // already on Windows' own drive (see LocalEngineRunFolder): everything else (eboot, saves)
+    // still refers to the portable drive as usual.
+    const auto effective_folder = (engine.kind == "kyty-astro" || engine.kind == "kyty-souls")
+                                      ? LocalEngineRunFolder(program_folder)
+                                      : program_folder;
+    const auto effective_program = effective_folder / program.filename();
     std::vector<std::string> args;
 #ifdef _WIN32
     // This process only hands the game over: its console window has nothing to show.
@@ -2134,13 +2154,13 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
         if (!choice) {
             return WentBack(serial);
         }
-        SetKeyValue(program_folder / "brunoshadps4-kyty.ini", "pantalla", *choice);
+        SetKeyValue(effective_folder / "brunoshadps4-kyty.ini", "pantalla", *choice);
         // What measured best on an RX 6800 XT (CPU Plaza, frame times logged with KYTY_PACE_LOG):
         // render 1368p upscaled by FSR 3.1 to 4K, FSR frame generation, and the game held at 45
         // real fps (vblank 45, the fork's built-in Decouple keeps its speed). At 60 the emulated
         // CPU misses vblanks and frames jump between 16.7 and 33 ms (about 60 hitches a minute,
         // the same at 1080p); at 45 they stay at 22.2 ms (one a minute).
-        const auto preset_path = program_folder / "u59-preset.json";
+        const auto preset_path = effective_folder / "u59-preset.json";
         auto preset = ReadJsonFile(preset_path);
         preset["KYTY_ASTRO_RENDER_RES"] = "1368";
         preset["KYTY_FSR"] = "1";
@@ -2176,7 +2196,7 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
         if (!choice) {
             return WentBack(serial);
         }
-        SetKeyValue(program_folder / "brunoshadps4-kyty.ini", "pantalla", *choice);
+        SetKeyValue(effective_folder / "brunoshadps4-kyty.ini", "pantalla", *choice);
         const std::string width = *choice == "4K" ? "3840" : *choice == "1440p" ? "2560" : "1920";
         const std::string height = *choice == "4K" ? "2160" : *choice == "1440p" ? "1440" : "1080";
         // The game draws its 3D at 1440 at most (run-windows.ps1 -RenderHeight takes 720-1440) and
@@ -2188,7 +2208,7 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
                 "-WindowStyle",
                 "Hidden",
                 "-File",
-                FS::PathToUTF8String(program_folder / "run-windows.ps1"),
+                FS::PathToUTF8String(effective_folder / "run-windows.ps1"),
                 "-Game",
                 FS::PathToUTF8String(eboot.parent_path()),
                 "-Width",
@@ -2226,12 +2246,11 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
         return false;
     }
     LOG_INFO(Common, "{} runs on {} ({})", serial, FS::PathToUTF8String(program), engine.kind);
-    SyncGameSaves(serial, program_folder);
+    // Saves are synced against wherever the engine actually runs from (effective_folder): for
+    // kyty-astro/kyty-souls that may be this PC's local mirror, not the portable engine folder.
+    SyncGameSaves(serial, effective_folder);
 #ifdef _WIN32
     // kyty-souls starts through PowerShell; the job still holds the emulator it starts.
-    if (engine.kind == "kyty-astro" || engine.kind == "kyty-souls") {
-        PlaceShaderCacheOnLocalDrive(program_folder);
-    }
     if (engine.kind == "tlg") {
         SetEnvironmentVariableW(L"TLG_GAME_DIR", program_folder.wstring().c_str());
         const auto res = ExternalEngineResolution(serial);
@@ -2242,15 +2261,15 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
         // US copy (CUSA03627, en / pt_BR / es_LA / fr_CA), Spain's on the European one.
         SetEnvironmentVariableW(L"TLG_LANGUAGE", serial == "CUSA03627" ? L"es_LA" : L"es_ES");
     }
-    std::filesystem::path run = program;
+    std::filesystem::path run = effective_program;
     if (engine.kind == "kyty-souls") {
         wchar_t system[MAX_PATH]{};
         GetSystemDirectoryW(system, MAX_PATH);
         run = std::filesystem::path{system} / "WindowsPowerShell" / "v1.0" / "powershell.exe";
     }
     const bool success = StartAndWait(run, args, title.empty() ? serial : title,
-                                      EngineName(engine, program), true, program_folder);
-    SyncGameSaves(serial, program_folder);
+                                      EngineName(engine, program), true, effective_folder);
+    SyncGameSaves(serial, effective_folder);
     ReturnToLauncher();
     return success;
 #else
