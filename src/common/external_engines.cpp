@@ -2008,10 +2008,15 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
     const auto program_folder = program.parent_path();
     // kyty-astro and kyty-souls run from a local mirror of the engine folder when it is not
     // already on Windows' own drive (see LocalEngineRunFolder): everything else (eboot, saves)
-    // still refers to the portable drive as usual.
+    // still refers to the portable drive as usual. Both engines are Windows-only forks, so this
+    // mirroring only exists under _WIN32; other platforms always use the portable folder as-is.
+#ifdef _WIN32
     const auto effective_folder = (engine.kind == "kyty-astro" || engine.kind == "kyty-souls")
                                       ? LocalEngineRunFolder(program_folder)
                                       : program_folder;
+#else
+    const auto effective_folder = program_folder;
+#endif
     const auto effective_program = effective_folder / program.filename();
     std::vector<std::string> args;
 #ifdef _WIN32
