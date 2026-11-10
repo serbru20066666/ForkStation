@@ -55,6 +55,10 @@ std::string updateOnlySerial;
 
 namespace {
 
+/// Set by the home screen when Back (circle) is pressed at its back-most place: the main loop
+/// then asks whether to leave ForkStation.
+bool quitPrompt = false;
+
 std::string CleanEmulatorVersion() {
     std::string ver{Common::g_version};
     if (const auto wip = ver.find(" WIP"); wip != std::string::npos) {
@@ -1593,8 +1597,15 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
             home.menu_frame = ImGui::GetFrameCount();
             home.menu_item = 0;
         }
-        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && home.zone != 1) {
-            home.zone = 1; // back to the games
+        // Back (circle / Esc): first back to the games; at the back-most place (the games) it
+        // opens the menu to go back to ForkStation or close it (that menu is the confirmation).
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+            ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            if (home.zone != 1) {
+                home.zone = 1; // back to the games
+            } else {
+                quitPrompt = true;
+            }
         }
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft, false) ||
             ImGui::IsKeyPressed(ImGuiKey_U, false)) {
@@ -2005,6 +2016,8 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         if (!lists[1 - home.tab].empty()) {
             hints.push_back({Menu::PadButton::Shoulders, "PS4 / PS5"});
         }
+        // Circle: back one place; on the games row, twice in a row to leave ForkStation.
+        hints.push_back({Menu::PadButton::Back, home.zone == 1 ? "Salir" : "Atrás"});
         DrawPadHints(dl, hints, end.x - margin, end.y - 40.0f * s, s);
     }
     ImGui::SetWindowFontScale(s);
@@ -2348,6 +2361,9 @@ void Launch(char* executableName, bool sameProcess) {
         std::error_code ec;
         const char* back = std::getenv("FORKSTATION_BACK");
         intro.active = !single_game.active && updateOnlySerial.empty() && !(back && back[0] == '1');
+        if (intro.active) {
+            Common::PlayStartupSound(); // ForkStation opening (not on the way back from a game)
+        }
         onboarding.active = !single_game.active && updateOnlySerial.empty() &&
                             (!std::filesystem::exists(OnboardingFlag(), ec) || gameIcons.empty());
     }
@@ -2364,6 +2380,22 @@ void Launch(char* executableName, bool sameProcess) {
             if (event.type == SDL_EVENT_QUIT) {
                 done = true;
             }
+        }
+
+        // Circle on the games row: the same menu as the resolution choice, to go back to
+        // ForkStation or close it. Asked here, between frames: the press that asked for it must
+        // not also answer it.
+        if (quitPrompt) {
+            quitPrompt = false;
+            const auto pick = ChooseOptionMenu("ForkStation", "¿Qué quieres hacer?",
+                                               {"Volver a ForkStation", "Cerrar ForkStation"}, 0);
+            // The menu had its own window: the keys it took are not held here.
+            ImGui::GetIO().ClearInputKeys();
+            if (pick && *pick == 1) {
+                done = true;
+                break;
+            }
+            TakeTheScreen(window);
         }
 
         if (const Uint64 now = SDL_GetTicks();

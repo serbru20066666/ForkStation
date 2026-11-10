@@ -31,7 +31,9 @@
 #ifdef _WIN32
 #include <tlhelp32.h>
 #include <windows.h>
+#include <mmsystem.h>
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "winmm.lib")
 #endif
 
 namespace Common {
@@ -2262,6 +2264,32 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
 #else
     LOG_ERROR(Common, "Other programs for a game are only started on Windows");
     return false;
+#endif
+}
+
+void PlayStartupSound() {
+#ifdef _WIN32
+    std::error_code ec;
+    const auto folder = ExecutableFolder() / "user";
+    for (const char* name : {"intro.mp3", "intro.wav"}) {
+        const auto file = folder / name;
+        if (!std::filesystem::exists(file, ec)) {
+            continue;
+        }
+        // MCI plays mp3 and wav on its own thread; the alias stays open until the program ends.
+        mciSendStringW(L"close forkstation_intro", nullptr, 0, nullptr);
+        const std::wstring open = L"open \"" + file.wstring() + L"\" type " +
+                                  (file.extension() == ".wav" ? L"waveaudio" : L"mpegvideo") +
+                                  L" alias forkstation_intro";
+        if (mciSendStringW(open.c_str(), nullptr, 0, nullptr) != 0) {
+            LOG_WARNING(Common, "Could not open the startup sound {}", FS::PathToUTF8String(file));
+            return;
+        }
+        // 1000 is the loudest MCI allows (the system volume itself is left as it is).
+        mciSendStringW(L"setaudio forkstation_intro volume to 1000", nullptr, 0, nullptr);
+        mciSendStringW(L"play forkstation_intro", nullptr, 0, nullptr);
+        return;
+    }
 #endif
 }
 

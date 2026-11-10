@@ -96,6 +96,10 @@ std::optional<EngineUpdateHint> GetUpdateHint(const std::string& serial);
 /// Brings a window (its native handle) to the front, even when Windows would refuse it.
 void BringWindowToFront(void* native_window);
 
+/// Plays the sound the player put at user\intro.mp3 (or .wav) beside the program, at full
+/// volume, without waiting for it. Nothing happens when there is no such file.
+void PlayStartupSound();
+
 /// Whether RetroBat (its emulatorLauncher) started this program.
 bool StartedByRetroBat();
 
