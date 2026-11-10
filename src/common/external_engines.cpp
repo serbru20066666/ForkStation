@@ -2246,9 +2246,12 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
         SetEnvironmentVariableW(L"TLG_RESOLUTION", res == "4K"      ? L"3840x2160"
                                                    : res == "1440p" ? L"2560x1440"
                                                                     : L"1920x1080");
-        // Spanish by default (the port starts in Brazilian Portuguese): Latin American on the
-        // US copy (CUSA03627, en / pt_BR / es_LA / fr_CA), Spain's on the European one.
-        SetEnvironmentVariableW(L"TLG_LANGUAGE", serial == "CUSA03627" ? L"es_LA" : L"es_ES");
+        // Spanish by default: Latin American on the US copy (CUSA03627, en / pt_BR / es_LA /
+        // fr_CA), Spain's on the European one. TLG_LANGUAGE is the engine's own language id (the
+        // port reads it with atoi and its launcher keeps it over its own choice): es_LA is 20 on
+        // the US copy, es_ES is 3 on the European one. A name such as "es_LA" read as 0 and the
+        // game fell back to English.
+        SetEnvironmentVariableW(L"TLG_LANGUAGE", serial == "CUSA03627" ? L"20" : L"3");
     }
     std::filesystem::path run = program;
     if (engine.kind == "kyty-souls") {
