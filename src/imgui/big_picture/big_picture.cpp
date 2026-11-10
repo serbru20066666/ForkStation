@@ -2352,6 +2352,11 @@ void Launch(char* executableName, bool sameProcess) {
                             (!std::filesystem::exists(OnboardingFlag(), ec) || gameIcons.empty());
     }
 
+    // Started by RetroBat (or another front end that still owns the foreground), Windows may
+    // refuse the first raise and leave this window behind: keep asking for the front for a few
+    // seconds until it has the focus.
+    const Uint64 openedAt = SDL_GetTicks();
+    Uint64 lastRaise = 0;
     while (!done) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -2359,6 +2364,15 @@ void Launch(char* executableName, bool sameProcess) {
             if (event.type == SDL_EVENT_QUIT) {
                 done = true;
             }
+        }
+
+        if (const Uint64 now = SDL_GetTicks();
+            now - openedAt < 6000 && now - lastRaise > 250 &&
+            !(SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS)) {
+            lastRaise = now;
+            SDL_RaiseWindow(window);
+            Common::BringWindowToFront(SDL_GetPointerProperty(
+                SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
         }
 
         ImGui_ImplSDLRenderer3_NewFrame();
