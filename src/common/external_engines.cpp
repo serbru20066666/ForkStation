@@ -6,8 +6,11 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <ctime>
+#include <deque>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <regex>
@@ -43,6 +46,9 @@ namespace {
 struct Engine {
     std::string kind;
     std::filesystem::path program;
+    /// owner/name of its GitHub repository, for the forks ForkStation found and installed itself
+    /// (motores.ini: "SERIAL = kind | program | owner/name").
+    std::string repo{};
 };
 
 std::string Trim(std::string s) {
@@ -84,9 +90,16 @@ void ParseLine(const std::string& line, std::map<std::string, Engine>& table) {
     }
     const std::string rest = text.substr(equals + 1);
     const auto bar = rest.find('|');
+    std::string program_text = bar == std::string::npos ? std::string{} : rest.substr(bar + 1);
+    std::string repo;
+    if (const auto bar2 = program_text.find('|'); bar2 != std::string::npos) {
+        repo = Trim(program_text.substr(bar2 + 1));
+        program_text = program_text.substr(0, bar2);
+    }
     Engine engine{Trim(rest.substr(0, bar)),
-                  bar == std::string::npos ? std::filesystem::path{}
-                                           : std::filesystem::path{Trim(rest.substr(bar + 1))}};
+                  program_text.empty() ? std::filesystem::path{}
+                                       : std::filesystem::path{Trim(program_text)},
+                  repo};
     std::stringstream serials{text.substr(0, equals)};
     std::string serial;
     while (std::getline(serials, serial, ',')) {
@@ -236,6 +249,9 @@ std::filesystem::path AppDataFile(const std::filesystem::path& relative) {
 }
 
 std::string EngineName(const Engine& engine, const std::filesystem::path& program) {
+    if (!engine.repo.empty()) {
+        return engine.repo.substr(engine.repo.find('/') + 1);
+    }
     if (engine.kind == "spartanport") {
         return "SpartanPort";
     }
@@ -264,6 +280,9 @@ std::string EngineName(const Engine& engine, const std::filesystem::path& progra
 }
 
 std::string EngineGitHubRepo(const Engine& engine, const std::filesystem::path& program) {
+    if (!engine.repo.empty()) {
+        return engine.repo;
+    }
     if (engine.kind == "spartanport") {
         return "FelipePrado0/SpartanPort";
     }
@@ -384,8 +403,11 @@ std::string EngineVersion(const std::filesystem::path& program) {
     const auto folder = program.parent_path();
     // KytyPS5 Astro builds are tagged like "astrobot-dlss-int21-23w": the tag is the version.
     // KytyPS5 and tlg_pc builds are named by their release tag, kept whole in VERSION.
+    // Forks ForkStation installed by itself (FORKSTATION_REPO beside them) too.
+    std::error_code repo_ec;
     if (const auto exe = ToLower(FS::PathToUTF8String(program.filename()));
-        exe == "kyty_emulator.exe" || exe == "the last guardian.exe") {
+        exe == "kyty_emulator.exe" || exe == "the last guardian.exe" ||
+        std::filesystem::exists(folder / "FORKSTATION_REPO", repo_ec)) {
         std::ifstream in{folder / "VERSION"};
         std::string line;
         std::getline(in, line);
@@ -1139,8 +1161,10 @@ std::string FetchUrlText(const std::string& url) {
     return {};
 }
 
+/// `on_progress` (0..1, or < 0 when unknown) replaces the report to the update window.
 bool DownloadFileWithProgress(const std::string& url, const std::filesystem::path& dest,
-                              const std::string& asset_name, uint64_t expected_size) {
+                              const std::string& asset_name, uint64_t expected_size,
+                              const std::function<void(float)>& on_progress = {}) {
     std::error_code ec;
     std::filesystem::create_directories(dest.parent_path(), ec);
     std::string base, path;
@@ -1158,6 +1182,10 @@ bool DownloadFileWithProgress(const std::string& url, const std::filesystem::pat
                 const uint64_t total = std::max<uint64_t>(expected_size, received);
                 const float ratio =
                     total > 0 ? static_cast<float>(received) / static_cast<float>(total) : 0.0f;
+                if (on_progress) {
+                    on_progress(ratio);
+                    return static_cast<bool>(out);
+                }
                 ModifyUpdateStatus([&](EngineUpdateStatus& st) {
                     st.progress = std::clamp(ratio * 0.80f, 0.01f, 0.80f);
                     st.message =
@@ -1173,10 +1201,14 @@ bool DownloadFileWithProgress(const std::string& url, const std::filesystem::pat
         }
     }
 #ifdef _WIN32
-    ModifyUpdateStatus([&](EngineUpdateStatus& st) {
-        st.progress = -1.0f;
-        st.message = fmt::format("Descargando {}...", asset_name);
-    });
+    if (on_progress) {
+        on_progress(-1.0f);
+    } else {
+        ModifyUpdateStatus([&](EngineUpdateStatus& st) {
+            st.progress = -1.0f;
+            st.message = fmt::format("Descargando {}...", asset_name);
+        });
+    }
     std::wstring cmd = L"curl.exe -fL -H \"User-Agent: ForkStation\" -o \"" + dest.wstring() +
                        L"\" \"" + std::filesystem::path{url}.wstring() + L"\"";
     STARTUPINFOW si{};
@@ -1520,7 +1552,8 @@ std::string ReleaseTagPrefix(const Engine& /*engine*/) {
 
 /// KytyPS5 builds are named by their tag, compared as they are: any other tag is an update.
 bool TagVersioned(const Engine& engine) {
-    return engine.kind == "kyty-astro" || engine.kind == "kyty-souls" || engine.kind == "tlg";
+    return engine.kind == "kyty-astro" || engine.kind == "kyty-souls" || engine.kind == "tlg" ||
+           !engine.repo.empty();
 }
 
 struct LatestRelease {
@@ -1887,6 +1920,501 @@ std::optional<EngineUpdateHint> GetUpdateHint(const std::string& serial) {
     return it->second;
 }
 
+// ---- Games added: their fork, found on GitHub and installed in the background ----------------
+
+namespace {
+
+std::mutex g_auto_mutex;
+std::map<std::string, AutoInstallStatus> g_auto;               // by serial
+std::deque<std::pair<std::string, std::string>> g_auto_queue; // serial, name to search
+bool g_auto_running = false;
+int g_auto_generation = 0;
+
+void SetAuto(const std::string& serial, const std::function<void(AutoInstallStatus&)>& change) {
+    std::scoped_lock lock{g_auto_mutex};
+    change(g_auto[serial]);
+}
+
+std::string UrlEncode(const std::string& text) {
+    std::string out;
+    for (const unsigned char c : text) {
+        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += static_cast<char>(c);
+        } else {
+            out += fmt::format("%{:02X}", c);
+        }
+    }
+    return out;
+}
+
+/// The words of a game's name that tell it apart ("Bloodborne™ Complete Edition" -> bloodborne).
+std::vector<std::string> NameWords(const std::string& name) {
+    static const std::set<std::string> common = {
+        "the",  "of",      "and",        "a",          "an",       "edition", "complete",
+        "game", "of",      "remastered", "collection", "goty",     "year",    "ps4",
+        "ps5",  "digital", "deluxe",     "standard",   "playstation"};
+    std::vector<std::string> words;
+    std::string word;
+    const auto flush = [&] {
+        if (word.size() >= 3 && !common.contains(word)) {
+            words.push_back(word);
+        } else if (word.size() >= 2 && std::isdigit(static_cast<unsigned char>(word[0]))) {
+            words.push_back(word); // "1886", "2"
+        }
+        word.clear();
+    };
+    for (const unsigned char c : name) {
+        if (std::isalnum(c)) {
+            word += static_cast<char>(std::tolower(c));
+        } else {
+            flush();
+        }
+    }
+    flush();
+    return words;
+}
+
+/// A folder's name as a game's name: "Bloodborne Complete Edition - CUSA00900.PS4" -> without the
+/// serial and the extension.
+std::string FolderGameName(const std::string& folder) {
+    std::string name = std::regex_replace(folder, std::regex{R"(\.(ps4|ps5|zar)$)", std::regex::icase}, "");
+    name = std::regex_replace(name, std::regex{R"([A-Z]{4}\d{5})"}, " ");
+    return Trim(name);
+}
+
+std::time_t ParseIsoTime(const std::string& text) {
+    std::tm tm{};
+    if (std::sscanf(text.c_str(), "%d-%d-%dT%d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday,
+                    &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6) {
+        return 0;
+    }
+    tm.tm_year -= 1900;
+    tm.tm_mon -= 1;
+#ifdef _WIN32
+    return _mkgmtime(&tm);
+#else
+    return timegm(&tm);
+#endif
+}
+
+struct ForkCandidate {
+    std::string repo;
+    double score = 0.0;
+};
+
+/// GitHub repositories that look like a PC port or emulator fork for the game: its name (or
+/// serial) in the repository's name or description, PC words, enough stars and recent work. Mods,
+/// trainers, cheats and builds for other systems are left out (they are not ways to play it, and
+/// some are bait).
+std::vector<ForkCandidate> SearchForks(const std::string& serial,
+                                       const std::vector<std::string>& names) {
+    static const std::vector<std::string> unwanted = {
+        "hack",    "cheat",  "trainer", "crack",   "undetected", "keygen",  "mod menu",
+        "unlock",  "macos",  "mac os",  "apple",   "iphone",     "ios ",    "android",
+        "server",  "camera", "save editor", "savegame", "texture", "reshade", "translation",
+        "free download", "trainer", "aimbot"};
+    static const std::vector<std::string> pc_words = {
+        "pc", "port", "windows", "native", "shadps4", "emulat", "recomp", "runtime", "fork"};
+    std::map<std::string, ForkCandidate> found;
+    const std::time_t now = std::time(nullptr);
+    std::vector<std::string> queries;
+    for (const auto& name : names) {
+        if (!NameWords(name).empty()) {
+            queries.push_back(name);
+        }
+    }
+    if (!serial.empty()) {
+        queries.push_back(serial);
+    }
+    for (const auto& query : queries) {
+        const std::string body = FetchUrlText(
+            "https://api.github.com/search/repositories?q=" + UrlEncode(query + " fork:true") +
+            "&sort=updated&per_page=40");
+        const auto json = nlohmann::json::parse(body, nullptr, false);
+        if (!json.is_object() || !json.contains("items") || !json["items"].is_array()) {
+            LOG_WARNING(Common, "Fork search for '{}': no answer from GitHub", query);
+            continue;
+        }
+        const auto words = NameWords(query);
+        for (const auto& item : json["items"]) {
+            if (!item.is_object() || item.value("archived", false) || item.value("disabled", false)) {
+                continue;
+            }
+            const std::string repo = item.value("full_name", std::string{});
+            const int stars = item.value("stargazers_count", 0);
+            std::string text = ToLower(item.value("name", std::string{}) + " " +
+                                       (item["description"].is_string()
+                                            ? item["description"].get<std::string>()
+                                            : std::string{}));
+            std::ranges::replace(text, '-', ' ');
+            std::ranges::replace(text, '_', ' ');
+            const std::time_t pushed = ParseIsoTime(item.value("pushed_at", std::string{}));
+            const double days = pushed > 0 ? std::difftime(now, pushed) / 86400.0 : 9999.0;
+            if (repo.empty() || stars < 20 || days > 365) {
+                continue;
+            }
+            if (std::ranges::any_of(unwanted, [&](const std::string& w) {
+                    return text.find(w) != std::string::npos;
+                })) {
+                continue;
+            }
+            const bool serial_match =
+                !serial.empty() && text.find(ToLower(serial)) != std::string::npos;
+            const auto matched = std::ranges::count_if(words, [&](const std::string& w) {
+                return text.find(w) != std::string::npos;
+            });
+            const bool name_match =
+                !words.empty() && matched * 2 >= static_cast<long>(words.size()) && matched > 0;
+            if (!serial_match && !name_match) {
+                continue;
+            }
+            if (!std::ranges::any_of(pc_words, [&](const std::string& w) {
+                    return text.find(w) != std::string::npos;
+                })) {
+                continue;
+            }
+            ForkCandidate c{repo};
+            c.score = std::log10(stars + 1.0) * 10.0 + (serial_match ? 15.0 : 0.0) +
+                      (days < 30 ? 10.0 : days < 90 ? 5.0 : 0.0) +
+                      static_cast<double>(matched) * 2.0;
+            if (auto& slot = found[repo]; c.score > slot.score) {
+                slot = c;
+            }
+        }
+    }
+    std::vector<ForkCandidate> list;
+    for (const auto& [repo, c] : found) {
+        list.push_back(c);
+    }
+    std::ranges::sort(list, [](const auto& a, const auto& b) { return a.score > b.score; });
+    return list;
+}
+
+/// The release's Windows .zip: (url, name, size), or nothing.
+std::optional<std::tuple<std::string, std::string, uint64_t>> WindowsZip(const nlohmann::json& release) {
+    std::optional<std::tuple<std::string, std::string, uint64_t>> best;
+    int best_score = -1;
+    if (!release.contains("assets") || !release["assets"].is_array()) {
+        return best;
+    }
+    for (const auto& asset : release["assets"]) {
+        const std::string name = asset.value("name", std::string{});
+        const std::string url = asset.value("browser_download_url", std::string{});
+        const std::string lower = ToLower(name);
+        if (url.empty() || !lower.ends_with(".zip")) {
+            continue;
+        }
+        if (lower.find("src") != std::string::npos || lower.find("source") != std::string::npos ||
+            lower.find("macos") != std::string::npos || lower.find("linux") != std::string::npos ||
+            lower.find("symbols") != std::string::npos || lower.find("pdb") != std::string::npos ||
+            lower.find("android") != std::string::npos) {
+            continue;
+        }
+        int score = 1;
+        if (lower.find("win") != std::string::npos) {
+            score += 10;
+        }
+        if (lower.find("x64") != std::string::npos || lower.find("64") != std::string::npos) {
+            score += 2;
+        }
+        if (score > best_score) {
+            best_score = score;
+            best = std::make_tuple(url, name, asset.value("size", uint64_t{0}));
+        }
+    }
+    return best;
+}
+
+/// The program to start in an installed fork: shadPS4 (started with --game) when it is one,
+/// otherwise its launcher or main program.
+std::optional<std::pair<std::string, std::filesystem::path>> FindForkProgram(
+    const std::filesystem::path& folder, const std::vector<std::string>& words) {
+    static const std::vector<std::string> skip = {"unins",   "updater", "update", "crash",
+                                                  "redist",  "vc_",     "dxsetup", "helper",
+                                                  "7z",      "setup",   "install"};
+    std::vector<std::filesystem::path> exes;
+    std::error_code ec;
+    // The zip's top folder and one level below it (where ports keep their program).
+    for (auto it = std::filesystem::recursive_directory_iterator(folder, ec);
+         !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        if (it.depth() >= 1 && it->is_directory(ec)) {
+            it.disable_recursion_pending();
+            continue;
+        }
+        const auto lower = ToLower(FS::PathToUTF8String(it->path().filename()));
+        if (!it->is_regular_file(ec) || !lower.ends_with(".exe")) {
+            continue;
+        }
+        if (lower == "shadps4.exe") {
+            return std::make_pair(std::string{"shadps4"}, it->path());
+        }
+        if (std::ranges::none_of(skip, [&](const std::string& s) {
+                return lower.find(s) != std::string::npos;
+            })) {
+            exes.push_back(it->path());
+        }
+    }
+    if (exes.empty()) {
+        return std::nullopt;
+    }
+    const auto rank = [&](const std::filesystem::path& p) {
+        const auto lower = ToLower(FS::PathToUTF8String(p.filename()));
+        int r = 0;
+        if (lower.find("launcher") != std::string::npos || lower.starts_with("play")) {
+            r += 100;
+        }
+        for (const auto& w : words) {
+            if (lower.find(w) != std::string::npos) {
+                r += 20;
+            }
+        }
+        if (p.parent_path() == folder) {
+            r += 10;
+        }
+        return r;
+    };
+    std::ranges::stable_sort(exes, [&](const auto& a, const auto& b) {
+        const int ra = rank(a), rb = rank(b);
+        if (ra != rb) {
+            return ra > rb;
+        }
+        std::error_code e;
+        return std::filesystem::file_size(a, e) > std::filesystem::file_size(b, e);
+    });
+    return std::make_pair(std::string{"generico"}, exes.front());
+}
+
+/// Downloads `release`'s Windows zip into `target_dir`, reporting to the game's progress.
+std::string InstallRelease(const std::string& serial, const nlohmann::json& release,
+                           const std::filesystem::path& target_dir, float from, float to) {
+    const auto zip = WindowsZip(release);
+    if (!zip) {
+        return "su versión no trae un .zip de Windows";
+    }
+    const auto& [url, name, size] = *zip;
+    std::error_code ec;
+    std::filesystem::create_directories(target_dir, ec);
+    const auto temp_zip = target_dir / ".forkstation_auto.zip";
+    SetAuto(serial, [&](AutoInstallStatus& st) {
+        st.message = fmt::format("Descargando {}...", name);
+    });
+    const bool downloaded = DownloadFileWithProgress(url, temp_zip, name, size, [&](float ratio) {
+        SetAuto(serial, [&](AutoInstallStatus& st) {
+            st.progress = ratio < 0.0f ? -1.0f : from + (to - from) * 0.9f * ratio;
+        });
+    });
+    if (!downloaded) {
+        std::filesystem::remove(temp_zip, ec);
+        return fmt::format("no se pudo descargar {}", name);
+    }
+    SetAuto(serial, [&](AutoInstallStatus& st) {
+        st.progress = from + (to - from) * 0.92f;
+        st.message = fmt::format("Descomprimiendo {}...", name);
+    });
+    const bool extracted = ExtractZipArchive(temp_zip, target_dir, false);
+    std::filesystem::remove(temp_zip, ec);
+    if (!extracted) {
+        return fmt::format("no se pudo descomprimir {}", name);
+    }
+    return {};
+}
+
+void AppendEngineLine(const std::string& line) {
+    const auto path = ExecutableFolder() / "motores.ini";
+    std::string text = ReadText(path);
+    if (!text.empty() && !text.ends_with("\n")) {
+        text += "\r\n";
+    }
+    text += line + "\r\n";
+    WriteText(path, text);
+}
+
+void MarkInstalled(const std::string& serial, const std::string& version) {
+    std::scoped_lock lock{g_hints_mutex};
+    auto& hint = g_hints[serial];
+    hint.checked = true;
+    hint.missing = false;
+    hint.available = false;
+    hint.installed_version = version;
+    hint.latest_version = version;
+}
+
+/// One game: its configured fork when it has one and it is missing, otherwise the best fork found
+/// on GitHub. Returns the message for the game's card.
+bool AutoInstallOne(const std::string& serial, const std::vector<std::string>& names,
+                    std::string& message) {
+    // A fork this program already knows for the game: only its download is missing.
+    if (const auto configured = FindConfiguredEngine(serial)) {
+        const auto& [engine, program] = *configured;
+        std::error_code ec;
+        if (std::filesystem::exists(program, ec)) {
+            message = "Su fork ya está instalado.";
+            return true;
+        }
+        const std::string repo = EngineGitHubRepo(engine, program);
+        SetAuto(serial, [&](AutoInstallStatus& st) {
+            st.message = fmt::format("Consultando {} en GitHub...", repo);
+        });
+        const auto release = FetchLatestRelease(engine, repo, true);
+        if (!release.ok) {
+            message = release.error;
+            return false;
+        }
+        if (auto error = InstallRelease(serial, release.json, program.parent_path(), 0.05f, 1.0f);
+            !error.empty()) {
+            message = fmt::format("{}: {}", repo, error);
+            return false;
+        }
+        WriteText(program.parent_path() / "VERSION", release.version + "\n");
+        InvalidateVersionCache(program);
+        MarkEngineCurrent(program, release.version);
+        MarkInstalled(serial, release.version);
+        message = fmt::format("{} {} instalado.", EngineName(engine, program), release.version);
+        return true;
+    }
+
+    SetAuto(serial, [&](AutoInstallStatus& st) {
+        st.message = "Buscando en GitHub el fork más adecuado...";
+    });
+    const auto candidates = SearchForks(serial, names);
+    if (candidates.empty()) {
+        message = "No se encontró un fork en GitHub: se jugará con el motor de ForkStation.";
+        return false;
+    }
+    std::vector<std::string> words;
+    for (const auto& n : names) {
+        for (auto& w : NameWords(n)) {
+            words.push_back(w);
+        }
+    }
+    int tried = 0;
+    for (const auto& candidate : candidates) {
+        if (++tried > 5) {
+            break;
+        }
+        Engine engine{"generico", {}, candidate.repo};
+        SetAuto(serial, [&](AutoInstallStatus& st) {
+            st.progress = 0.05f;
+            st.message = fmt::format("Revisando {}...", candidate.repo);
+        });
+        const auto release = FetchLatestRelease(engine, candidate.repo, true);
+        if (!release.ok || !WindowsZip(release.json)) {
+            continue;
+        }
+        std::string folder_name = candidate.repo.substr(candidate.repo.find('/') + 1);
+        std::ranges::replace_if(folder_name, [](char c) { return !std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_'; }, '_');
+        auto target = ExecutableFolder() / "motores" / folder_name;
+        std::error_code ec;
+        if (std::filesystem::exists(target, ec) &&
+            !std::filesystem::exists(target / "FORKSTATION_REPO", ec)) {
+            target = ExecutableFolder() / "motores" /
+                     (folder_name + "_" + candidate.repo.substr(0, candidate.repo.find('/')));
+        }
+        if (auto error = InstallRelease(serial, release.json, target, 0.08f, 1.0f);
+            !error.empty()) {
+            LOG_WARNING(Common, "Fork {} for {}: {}", candidate.repo, serial, error);
+            continue;
+        }
+        const auto program = FindForkProgram(target, words);
+        if (!program) {
+            LOG_WARNING(Common, "Fork {} for {}: no program in its zip", candidate.repo, serial);
+            std::filesystem::remove_all(target, ec);
+            continue;
+        }
+        const auto relative = std::filesystem::relative(program->second, ExecutableFolder(), ec);
+        WriteText(target / "VERSION", release.version + "\n");
+        WriteText(target / "FORKSTATION_REPO", candidate.repo + "\n");
+        AppendEngineLine(fmt::format("# {} (fork encontrado en GitHub por ForkStation)",
+                                     names.empty() ? serial : names.front()));
+        AppendEngineLine(fmt::format("{} = {} | {} | {}", serial, program->first,
+                                     FS::PathToUTF8String(relative), candidate.repo));
+        InvalidateVersionCache(program->second);
+        MarkInstalled(serial, release.version);
+        message = fmt::format("{} {} instalado (github.com/{}).", folder_name, release.version,
+                              candidate.repo);
+        LOG_INFO(Common, "Fork for {}: {} {} -> {}", serial, candidate.repo, release.version,
+                 FS::PathToUTF8String(program->second));
+        return true;
+    }
+    message = "Ningún fork encontrado trae una versión para Windows: se jugará con el motor de "
+              "ForkStation.";
+    return false;
+}
+
+} // namespace
+
+void StartAutoInstall(const std::vector<std::pair<std::string, std::string>>& games) {
+    std::scoped_lock lock{g_auto_mutex};
+    for (const auto& [serial, name] : games) {
+        if (serial.empty() || (g_auto.contains(serial) && g_auto[serial].active)) {
+            continue;
+        }
+        g_auto[serial] = {};
+        g_auto[serial].active = true;
+        g_auto[serial].progress = -1.0f;
+        g_auto[serial].message = "En cola para buscar su fork...";
+        g_auto_queue.emplace_back(serial, name);
+    }
+    if (g_auto_running || g_auto_queue.empty()) {
+        return;
+    }
+    g_auto_running = true;
+    std::thread([] {
+        SetCurrentThreadName("ForkAutoInstall");
+        while (true) {
+            std::pair<std::string, std::string> job;
+            {
+                std::scoped_lock lock{g_auto_mutex};
+                if (g_auto_queue.empty()) {
+                    g_auto_running = false;
+                    return;
+                }
+                job = g_auto_queue.front();
+                g_auto_queue.pop_front();
+            }
+            const auto& [serial, name] = job;
+            // The game's name and its folder's, as the player sees them ("a|b").
+            std::vector<std::string> names;
+            std::stringstream parts{name};
+            for (std::string part; std::getline(parts, part, '|');) {
+                if (part = Trim(part); !part.empty() &&
+                                       std::ranges::find(names, part) == names.end()) {
+                    names.push_back(part);
+                }
+            }
+            std::string message;
+            const bool ok = AutoInstallOne(serial, names, message);
+            LOG_INFO(Common, "Auto install for {}: {}", serial, message);
+            std::scoped_lock lock{g_auto_mutex};
+            auto& st = g_auto[serial];
+            st.active = false;
+            st.finished = true;
+            st.success = ok;
+            st.progress = 1.0f;
+            st.message = message;
+            ++g_auto_generation;
+        }
+    }).detach();
+}
+
+std::optional<AutoInstallStatus> GetAutoInstall(const std::string& serial) {
+    std::scoped_lock lock{g_auto_mutex};
+    const auto it = g_auto.find(serial);
+    if (it == g_auto.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+int AutoInstallGeneration() {
+    std::scoped_lock lock{g_auto_mutex};
+    return g_auto_generation;
+}
+
+std::string GameNameFromFolder(const std::string& folder_name) {
+    return FolderGameName(folder_name);
+}
+
 /// Synchronizes saved games between shadPS4 / RetroBat (home_dir / 1000 / savedata) and the port's
 /// user directory (program_folder / user / savedata / 1 / serial), ensuring that saves are never
 /// lost or disassociated regardless of how or where the game is launched.
@@ -2229,6 +2757,10 @@ bool LaunchExternalEngine(const std::string& serial, const std::string& title,
         }
     } else if (engine.kind == "shadps4") {
         args = {"--game", FS::PathToUTF8String(eboot)};
+    } else if (engine.kind == "generico") {
+        // A port found on GitHub: how it takes the game is its own, so its program (usually its
+        // launcher, where the game's folder is chosen) starts on its own, in its folder.
+        args = {};
     } else {
         LOG_WARNING(Common, "Unknown kind '{}' for {} in motores.ini", engine.kind, serial);
         return false;

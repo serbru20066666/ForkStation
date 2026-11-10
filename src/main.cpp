@@ -5,7 +5,9 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <chrono>
 #include <span>
+#include <thread>
 #include <vector>
 #include <CLI/CLI.hpp>
 #include <SDL3/SDL_messagebox.h>
@@ -105,6 +107,10 @@ int main(int argc, char* argv[]) {
     app.add_flag("--log-append", append_log);
 
     app.add_option("--add-game-folder", addGameFolder)->check(CLI::ExistingDirectory);
+    std::vector<std::string> findFork;
+    app.add_option("--find-fork", findFork,
+                   "Find and install a game's fork from GitHub: SERIAL \"name|folder name\"")
+        ->expected(2);
     app.add_option("--set-addon-folder", setAddonFolder)->check(CLI::ExistingDirectory);
     app.add_option("--mount", mounts, "Mount source to destination");
     app.add_option("-e,--env", env_vars, "Environment variables to pass to the guest");
@@ -161,6 +167,19 @@ int main(int argc, char* argv[]) {
     // Load configurations
     EmulatorSettings.Load();
     UserSettings.Load();
+
+    // The add-game search on its own (for scripts and tests): waits for it and prints the result.
+    if (findFork.size() == 2) {
+        Common::StartAutoInstall({{findFork[0], findFork[1]}});
+        while (true) {
+            const auto st = Common::GetAutoInstall(findFork[0]);
+            if (st && st->finished) {
+                fmt::print("{}: {}\n", st->success ? "OK" : "FALLO", st->message);
+                return st->success ? 0 : 1;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+    }
 
     if (bigPicture || open_launcher) {
         BigPictureMode::Launch(argv[0], sameProcess);

@@ -93,6 +93,30 @@ void StartUpdateChecks(const std::vector<std::string>& serials);
 /// The check's result for a game, once it has one.
 std::optional<EngineUpdateHint> GetUpdateHint(const std::string& serial);
 
+/// A game just added: its fork, being found on GitHub and installed in the background.
+struct AutoInstallStatus {
+    bool active = false;   ///< queued, searching, downloading or unpacking
+    bool finished = false; ///< done (successfully or not)
+    bool success = false;
+    float progress = 0.0f; ///< 0..1, < 0 while it is not known (searching)
+    std::string message;
+};
+
+/// For each game (serial, "its name|its folder's name"): the fork this program knows for it when
+/// it is missing, or else the most suitable and up to date one found on GitHub (its name or serial
+/// in a PC port's or emulator fork's repository, with a Windows .zip release), downloaded into
+/// motores\ and written into motores.ini. One game at a time, in the background.
+void StartAutoInstall(const std::vector<std::pair<std::string, std::string>>& games);
+
+/// The game's install, while it runs and after it.
+std::optional<AutoInstallStatus> GetAutoInstall(const std::string& serial);
+
+/// Grows each time an install ends (to refresh what the cards say).
+int AutoInstallGeneration();
+
+/// A folder's name as a game's name, without its serial and extension.
+std::string GameNameFromFolder(const std::string& folder_name);
+
 /// Brings a window (its native handle) to the front, even when Windows would refuse it.
 void BringWindowToFront(void* native_window);
 

@@ -9,6 +9,7 @@
 #include <fstream>
 #include <map>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <nlohmann/json.hpp>
 #include <stb_image.h>
@@ -1023,10 +1024,35 @@ void LoadFolderBrowser() {
     });
 }
 
+/// Lists the games again; the ones that were not there before get their fork, found on GitHub and
+/// installed in the background (a grey layer advances over their cover meanwhile).
+void ReloadGamesAndFindForks() {
+    std::set<std::string> before;
+    for (const auto& icon : gameIcons) {
+        before.insert(icon.serial);
+    }
+    GetGameIconInfo(gameIcons);
+    std::vector<std::pair<std::string, std::string>> added;
+    for (const auto& icon : gameIcons) {
+        if (icon.serial.empty() || before.contains(icon.serial)) {
+            continue;
+        }
+        // The game's name and its folder's ("Bloodborne Complete Edition - CUSA00900.PS4").
+        const auto where = Common::FS::PathToUTF8String(
+            icon.ebootPath.filename() == "eboot.bin" ? icon.ebootPath.parent_path().filename()
+                                                     : icon.ebootPath.filename());
+        added.emplace_back(icon.serial,
+                           icon.title + "|" + Common::GameNameFromFolder(where));
+    }
+    if (!added.empty()) {
+        Common::StartAutoInstall(added);
+    }
+}
+
 void ChooseGamesFolder(const std::filesystem::path& folder) {
     EmulatorSettings.AddGameInstallDir(folder);
     EmulatorSettings.Save();
-    GetGameIconInfo(gameIcons);
+    ReloadGamesAndFindForks();
     browser.open = false;
 }
 
@@ -1409,7 +1435,7 @@ void DrawOnboarding() {
                 }
             }
             EmulatorSettings.Save();
-            GetGameIconInfo(gameIcons);
+            ReloadGamesAndFindForks();
             ++onboarding.added;
         } else {
             OpenFolderBrowser();
@@ -1796,9 +1822,32 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
                         {tmax.x + 3.0f * s, tmax.y + 3.0f * s}, IM_COL32(255, 255, 255, 255),
                         round + 3.0f * s, 0, 3.0f * s);
         }
-        // An engine with a newer release: a small orange dot on its tile.
-        if (const auto hint = Common::GetUpdateHint(gameIcons[i].serial);
-            hint && (hint->available || hint->missing)) {
+        // Its fork being found and installed: the cover greyed, and a grey layer advancing over
+        // it from the left as a progress bar (pulsing while GitHub is searched).
+        if (const auto install = Common::GetAutoInstall(gameIcons[i].serial);
+            install && install->active) {
+            dl->AddRectFilled(tmin, tmax, IM_COL32(20, 20, 24, 150), round);
+            if (install->progress >= 0.0f) {
+                const float x = tmin.x + (tmax.x - tmin.x) * std::clamp(install->progress, 0.0f, 1.0f);
+                dl->PushClipRect(tmin, {x, tmax.y}, true);
+                dl->AddRectFilled(tmin, tmax, IM_COL32(170, 170, 176, 170), round);
+                dl->PopClipRect();
+            } else {
+                const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 4.0f);
+                dl->AddRectFilled(tmin, tmax,
+                                  IM_COL32(170, 170, 176, static_cast<int>(40 + 60 * pulse)), round);
+            }
+            const std::string pct = install->progress >= 0.0f
+                                        ? fmt::format("{}%", static_cast<int>(install->progress * 100.0f))
+                                        : std::string{"..."};
+            ImGui::SetWindowFontScale(s * 0.45f);
+            const ImVec2 ps = ImGui::CalcTextSize(pct.c_str());
+            dl->AddText({(tmin.x + tmax.x - ps.x) * 0.5f, (tmin.y + tmax.y - ps.y) * 0.5f},
+                        IM_COL32(255, 255, 255, 245), pct.c_str());
+            ImGui::SetWindowFontScale(s);
+        } else if (const auto hint = Common::GetUpdateHint(gameIcons[i].serial);
+                   hint && (hint->available || hint->missing)) {
+            // An engine with a newer release: a small orange dot on its tile.
             dl->AddCircleFilled({tmax.x - 10.0f * s, tmin.y + 10.0f * s}, 6.5f * s,
                                 hint->missing ? IM_COL32(230, 70, 60, 255)
                                               : IM_COL32(255, 160, 30, 255));
@@ -1833,7 +1882,19 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
     y += ImGui::CalcTextSize(engine_line.c_str()).y + 10.0f * s;
 
     const auto hint = Common::GetUpdateHint(game.serial);
-    if (hint && (hint->available || hint->missing)) {
+    const auto install = Common::GetAutoInstall(game.serial);
+    if (install && !install->message.empty()) {
+        // Its fork, found on GitHub and installed in the background: what it is doing, or how it
+        // ended.
+        const ImU32 dot = install->active    ? IM_COL32(180, 180, 190, 255)
+                          : install->success ? IM_COL32(80, 200, 120, 255)
+                                             : IM_COL32(230, 70, 60, 255);
+        dl->AddCircleFilled({info_x + 6.0f * s, y + ImGui::GetTextLineHeight() * 0.5f}, 5.0f * s,
+                            dot);
+        dl->AddText({info_x + 20.0f * s, y}, IM_COL32(235, 235, 240, 255),
+                    install->message.c_str());
+        y += ImGui::GetTextLineHeight() + 12.0f * s;
+    } else if (hint && (hint->available || hint->missing)) {
         const std::string notice =
             hint->missing ? fmt::format("Falta su motor: pulsa Actualizar para instalar {}",
                                         hint->latest_version)
@@ -2396,6 +2457,12 @@ void Launch(char* executableName, bool sameProcess) {
                 break;
             }
             TakeTheScreen(window);
+        }
+
+        // A fork found and installed in the background: the cards say its engine now.
+        if (static int seen = 0; Common::AutoInstallGeneration() != seen) {
+            seen = Common::AutoInstallGeneration();
+            FillGameDetails(gameIcons);
         }
 
         if (const Uint64 now = SDL_GetTicks();
