@@ -1240,9 +1240,15 @@ bool ExtractZipArchive(const std::filesystem::path& zip_path,
     std::filesystem::create_directories(extract_tmp, ec);
 
 #ifdef _WIN32
-    // Windows native tar extracts .zip archives directly.
-    std::wstring cmd =
-        L"tar.exe -xf \"" + zip_path.wstring() + L"\" -C \"" + extract_tmp.wstring() + L"\"";
+    // Windows native tar extracts .zip archives directly. -m: do not restore file times; on exFAT
+    // (portable RetroBat disks) tar fails with "Can't restore time: Invalid argument" and exits 1
+    // even though every file was written. The full System32 path avoids a foreign tar.exe from
+    // RetroBat's or Git's PATH.
+    wchar_t sys_dir[MAX_PATH]{};
+    GetSystemDirectoryW(sys_dir, MAX_PATH);
+    std::wstring cmd = L"\"" + (std::filesystem::path{sys_dir} / L"tar.exe").wstring() +
+                       L"\" -xmf \"" + zip_path.wstring() + L"\" -C \"" + extract_tmp.wstring() +
+                       L"\"";
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -1265,7 +1271,7 @@ bool ExtractZipArchive(const std::filesystem::path& zip_path,
     }
 #else
     const std::string cmd =
-        "tar -xf \"" + zip_path.string() + "\" -C \"" + extract_tmp.string() + "\"";
+        "tar -xmf \"" + zip_path.string() + "\" -C \"" + extract_tmp.string() + "\"";
     const int code = std::system(cmd.c_str());
     if (code != 0) {
         LOG_ERROR(Common, "ExtractZipArchive: tar exited with {}", code);
