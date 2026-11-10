@@ -2430,6 +2430,10 @@ void RefreshRetroBatForkOptions() {
         programs.emplace_back(Engine{"interno", ExecutablePath()}, ExecutablePath());
         std::string info;
         bool any_update = false;
+        // One option row per fork, so the game's advanced options show its installed version and
+        // the latest one on GitHub right on the row (the text of the only choice).
+        std::vector<std::pair<std::string, std::string>> fork_rows; // value, feature XML
+        int row_order = 3;
         for (const auto& [engine, program] : programs) {
             const bool own = engine.kind == "interno";
             const std::string installed = own ? CleanEmulatorVersion() : EngineVersion(program);
@@ -2446,6 +2450,21 @@ void RefreshRetroBatForkOptions() {
             }
             info += fmt::format("• {} ({}): {} — {}\n", name, GamesOfKind(engine.kind),
                                 installed.empty() ? "sin versión" : installed, status);
+            const std::string row_value = "brunoshadps4_fork_" + engine.kind;
+            fork_rows.emplace_back(row_value, fmt::format(
+                "<feature submenu=\"FORK\" name=\"{}\" group=\"ADVANCED SETTINGS\" "
+                "value=\"{}\" description=\"{}\" order=\"{}\">\r\n      <choice name=\"{}\" "
+                "value=\"0\"/>\r\n    </feature>",
+                AttributeEscape(fmt::format("{} ({})", name, GamesOfKind(engine.kind))),
+                row_value,
+                AttributeEscape(fmt::format("Instalada: {}\nÚltima en GitHub: {}\n{}",
+                                            installed.empty() ? "sin versión" : installed,
+                                            release.ok ? release.version : "no se pudo consultar",
+                                            status)),
+                row_order++,
+                AttributeEscape(fmt::format("Instalada {} | GitHub {} | {}",
+                                            installed.empty() ? "—" : installed,
+                                            release.ok ? release.version : "?", status))));
         }
         const std::time_t now = std::time(nullptr);
         if (const std::tm* when = std::localtime(&now)) {
@@ -2461,7 +2480,7 @@ void RefreshRetroBatForkOptions() {
         }
         SetFeature(xml, "brunoshadps4_fork",
                    "<feature submenu=\"FORK\" name=\"ACTUALIZAR FORK DESDE SU GITHUB\" "
-                   "group=\"BRUNOSHADPS4\" value=\"brunoshadps4_fork\" description=\"" +
+                   "group=\"ADVANCED SETTINGS\" value=\"brunoshadps4_fork\" description=\"" +
                        AttributeEscape("Al iniciar el juego muestra la versión instalada de su "
                                        "fork y la última publicada en su GitHub, y permite "
                                        "actualizarlo antes de jugar.") +
@@ -2472,10 +2491,13 @@ void RefreshRetroBatForkOptions() {
             "<feature submenu=\"FORK\" name=\"" +
                 std::string{any_update ? "VERSIÓN DE LOS FORKS: HAY ACTUALIZACIONES"
                                        : "VERSIÓN DE LOS FORKS: TODOS AL DÍA"} +
-                "\" group=\"BRUNOSHADPS4\" value=\"brunoshadps4_forks_info\" description=\"" +
+                "\" group=\"ADVANCED SETTINGS\" value=\"brunoshadps4_forks_info\" description=\"" +
                 AttributeEscape(info) +
                 "\" order=\"2\">\r\n      <choice name=\"Ver descripción\" value=\"0\"/>\r\n"
                 "    </feature>");
+        for (const auto& [value, feature] : fork_rows) {
+            SetFeature(xml, value, feature);
+        }
         const auto temp = features.parent_path() / "es_features.cfg.brunoshadps4";
         std::error_code ec;
         if (WriteText(temp, xml)) {
