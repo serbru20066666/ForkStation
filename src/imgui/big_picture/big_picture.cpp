@@ -783,16 +783,25 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
     std::set<std::filesystem::path> seen_folders;
     for (const auto& installLoc : EmulatorSettings.GetAllGameInstallDirs()) {
         std::error_code exists_error; // a saved folder's drive may not be ready
-        if (installLoc.enabled && std::filesystem::exists(installLoc.path, exists_error)) {
-            const auto real_folder = std::filesystem::canonical(installLoc.path, exists_error);
+        const auto install_folder = EmulatorSettingsImpl::FindOnAnyDrive(installLoc.path);
+        if (installLoc.enabled && std::filesystem::exists(install_folder, exists_error)) {
+            const auto real_folder = std::filesystem::canonical(install_folder, exists_error);
             if (!exists_error && !seen_folders.insert(real_folder).second) {
                 continue;
             }
-            for (const auto& entry : std::filesystem::directory_iterator(installLoc.path)) {
+            exists_error.clear();
+            for (const auto& entry :
+                 std::filesystem::directory_iterator(install_folder, exists_error)) {
+                // A link to a drive that is not there today is not a game.
+                std::error_code entry_error;
+                const bool entry_is_folder = entry.is_directory(entry_error);
+                if (entry_error) {
+                    continue;
+                }
 
                 std::string pathstring = entry.path().filename().string();
                 if (pathstring.ends_with("-UPDATE") || pathstring.ends_with("-patch") ||
-                    (!entry.is_directory() && !Core::FileSys::IsZArchiveFile(entry))) {
+                    (!entry_is_folder && !Core::FileSys::IsZArchiveFile(entry))) {
                     continue;
                 }
 
@@ -860,7 +869,8 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
     for (const auto& installLoc : EmulatorSettings.GetAllGameInstallDirs()) {
         const auto name = installLoc.path.filename();
         std::error_code ps3_error;
-        const auto ps3 = installLoc.path.parent_path() / "ps3";
+        const auto ps3 =
+            EmulatorSettingsImpl::FindOnAnyDrive(installLoc.path).parent_path() / "ps3";
         if (installLoc.enabled && (name == "ps4" || name == "ps5") &&
             std::filesystem::is_directory(ps3, ps3_error)) {
             ps3_folders.push_back(ps3);

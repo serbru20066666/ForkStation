@@ -552,6 +552,9 @@ public:
     void SetGameInstallDirs(const std::vector<std::filesystem::path>& dirs_config);
     const std::vector<bool> GetGameInstallDirsEnabled();
     const std::vector<GameInstallDir>& GetAllGameInstallDirs() const;
+    /// A saved folder, wherever its portable drive is today: the same path on the executable's
+    /// drive or on any other letter. The path as it was when it is on none.
+    static std::filesystem::path FindOnAnyDrive(const std::filesystem::path& stored);
 
     std::filesystem::path GetHomeDir();
     void SetHomeDir(const std::filesystem::path& dir);

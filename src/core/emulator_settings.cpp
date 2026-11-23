@@ -184,7 +184,19 @@ static std::filesystem::path OnReachableDrive(const std::filesystem::path& store
                                               const std::filesystem::path& fallback) {
     std::error_code ec;
     const auto root = stored.root_path();
-    if (root.empty() || std::filesystem::exists(root, ec)) {
+    if (root.empty()) {
+        return stored;
+    }
+    const auto found = EmulatorSettingsImpl::FindOnAnyDrive(stored);
+    if (found != stored || std::filesystem::exists(stored, ec)) {
+        return found;
+    }
+    return std::filesystem::exists(root, ec) ? stored : fallback;
+}
+
+std::filesystem::path EmulatorSettingsImpl::FindOnAnyDrive(const std::filesystem::path& stored) {
+    std::error_code ec;
+    if (!stored.has_root_name() || std::filesystem::exists(stored, ec)) {
         return stored;
     }
     if (const char* base = SDL_GetBasePath()) {
@@ -195,7 +207,14 @@ static std::filesystem::path OnReachableDrive(const std::filesystem::path& store
             return moved;
         }
     }
-    return fallback;
+    for (char letter = 'C'; letter <= 'Z'; ++letter) {
+        const auto moved = std::filesystem::path{std::string{letter} + ":\\"} /
+                           stored.relative_path();
+        if (std::filesystem::exists(moved, ec)) {
+            return moved;
+        }
+    }
+    return stored;
 }
 
 std::filesystem::path EmulatorSettingsImpl::GetHomeDir() {
