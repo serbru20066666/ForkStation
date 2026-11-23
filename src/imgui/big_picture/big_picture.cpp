@@ -778,9 +778,15 @@ SDL_Texture* LoadSdlTextureDataFromFile(std::filesystem::path filePath) {
 void GetGameIconInfo(std::vector<IconInfo>& icons) {
     icons.clear();
 
+    // A folder reached twice (a junction and its target) lists its games once.
+    std::set<std::filesystem::path> seen_folders;
     for (const auto& installLoc : EmulatorSettings.GetAllGameInstallDirs()) {
         std::error_code exists_error; // a saved folder's drive may not be ready
         if (installLoc.enabled && std::filesystem::exists(installLoc.path, exists_error)) {
+            const auto real_folder = std::filesystem::canonical(installLoc.path, exists_error);
+            if (!exists_error && !seen_folders.insert(real_folder).second) {
+                continue;
+            }
             for (const auto& entry : std::filesystem::directory_iterator(installLoc.path)) {
 
                 std::string pathstring = entry.path().filename().string();
@@ -886,7 +892,58 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
 
 namespace {
 
+/// One axis of the sticks as menu steps. A step needs a firm push; letting go, the stick springs
+/// back past the center, and that rebound must not count as a push the other way.
+struct StickAxis {
+    int dir = 0;
+    double next_step = 0.0;
+    double quiet_until = 0.0;
+
+    void Reset() {
+        dir = 0;
+        quiet_until = ImGui::GetTime() + 0.15;
+    }
+
+    /// -1, 0 or +1 this frame.
+    int Step(ImGuiKey left_neg, ImGuiKey left_pos, ImGuiKey right_neg, ImGuiKey right_pos) {
+        constexpr float push = 0.60f;    // of the travel past the dead zone
+        constexpr float release = 0.20f;
+        const auto analog = [](ImGuiKey key) { return ImGui::GetKeyData(key)->AnalogValue; };
+        const float value = std::max(analog(left_pos), analog(right_pos)) -
+                            std::max(analog(left_neg), analog(right_neg));
+        const double now = ImGui::GetTime();
+        if (dir != 0) {
+            if (value * dir < release) {
+                Reset();
+                return 0;
+            }
+            if (now >= next_step) {
+                next_step = now + 0.13;
+                return dir;
+            }
+            return 0;
+        }
+        if (now < quiet_until || std::abs(value) < push) {
+            return 0;
+        }
+        dir = value > 0.0f ? 1 : -1;
+        next_step = now + 0.38;
+        return dir;
+    }
+    int Horizontal() {
+        return Step(ImGuiKey_GamepadLStickLeft, ImGuiKey_GamepadLStickRight,
+                    ImGuiKey_GamepadRStickLeft, ImGuiKey_GamepadRStickRight);
+    }
+    int Vertical() {
+        return Step(ImGuiKey_GamepadLStickUp, ImGuiKey_GamepadLStickDown, ImGuiKey_GamepadRStickUp,
+                    ImGuiKey_GamepadRStickDown);
+    }
+};
+
 struct Home {
+    StickAxis stick_x;    ///< the tiles and the bars
+    StickAxis stick_y;    ///< between the rows
+    StickAxis stick_menu; ///< the options menu
     int tab = -1;                            ///< 0: PS4 games, 1: PS5 games, 2: PS3 games
     std::array<int, 3> selected{};           ///< the chosen tile of each tab
     std::map<std::string, SDL_Texture*> art; ///< by serial (nullptr: the game has none)
@@ -1166,10 +1223,12 @@ void DrawFolderBrowser() {
     const auto pressed = [](std::initializer_list<ImGuiKey> keys) {
         return std::ranges::any_of(keys, [](ImGuiKey k) { return ImGui::IsKeyPressed(k, true); });
     };
-    if (pressed({ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadLStickDown})) {
+    static StickAxis browser_stick;
+    const int browser_step = browser_stick.Vertical();
+    if (pressed({ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown}) || browser_step > 0) {
         browser.sel = std::min(browser.sel + 1, count - 1);
     }
-    if (pressed({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadLStickUp})) {
+    if (pressed({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp}) || browser_step < 0) {
         browser.sel = std::max(browser.sel - 1, 0);
     }
     if (ImGui::GetIO().MouseWheel != 0.0f) {
@@ -1614,26 +1673,26 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
 
         const int top_count = 2;    // adding games and about (the tabs: L1 / R1 only)
         const int action_count = 2; // Play and the options
-        if (pressed({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadLStickUp}) &&
-            home.zone > 0) {
+        const int step_x = home.stick_x.Horizontal();
+        const int step_y = home.stick_y.Vertical();
+        if ((pressed({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp}) || step_y < 0) && home.zone > 0) {
             --home.zone;
             home.item = home.zone == 0 ? 0 : home.item;
         }
-        if (pressed({ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadLStickDown}) &&
+        if ((pressed({ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown}) || step_y > 0) &&
             home.zone < 1) {
             ++home.zone;
             home.item = 0;
         }
         const int count_here = home.zone == 0 ? top_count : action_count;
-        if (pressed(
-                {ImGuiKey_RightArrow, ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickRight})) {
+        if (pressed({ImGuiKey_RightArrow, ImGuiKey_GamepadDpadRight}) || step_x > 0) {
             if (home.zone == 1) {
                 sel = std::min(sel + 1, static_cast<int>(list.size()) - 1);
             } else {
                 home.item = std::min(home.item + 1, count_here - 1);
             }
         }
-        if (pressed({ImGuiKey_LeftArrow, ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadLStickLeft})) {
+        if (pressed({ImGuiKey_LeftArrow, ImGuiKey_GamepadDpadLeft}) || step_x < 0) {
             if (home.zone == 1) {
                 sel = std::max(sel - 1, 0);
             } else {
@@ -2091,11 +2150,11 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         };
         if (!ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) && !showSettings &&
             ImGui::GetFrameCount() != home.menu_frame) {
-            if (pressed(
-                    {ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadLStickDown})) {
+            const int menu_step = home.stick_menu.Vertical();
+            if (pressed({ImGuiKey_DownArrow, ImGuiKey_GamepadDpadDown}) || menu_step > 0) {
                 home.menu_item = std::min(home.menu_item + 1, count - 1);
             }
-            if (pressed({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadLStickUp})) {
+            if (pressed({ImGuiKey_UpArrow, ImGuiKey_GamepadDpadUp}) || menu_step < 0) {
                 home.menu_item = std::max(home.menu_item - 1, 0);
             }
             if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) ||
