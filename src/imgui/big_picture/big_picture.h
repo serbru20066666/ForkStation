@@ -33,6 +33,7 @@ struct IconInfo {
     bool ps3{};
     std::filesystem::path artFolder;
     std::string ps3Kind;
+    std::filesystem::path ps3Eboot; ///< the disc's EBOOT.BIN, for RPCS3
 };
 
 /// The home screen's tab of a game: 0 PS4, 1 PS5, 2 PS3.

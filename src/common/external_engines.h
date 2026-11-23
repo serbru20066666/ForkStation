@@ -150,14 +150,18 @@ std::string CycleExternalEngineResolution(const std::string& serial);
 ///   ascension  God of War: Ascension's port: asks for the resolution, writes it, the best quality
 ///              and the disc's folder into the port's settings.json, and runs it with --play
 ///              (without its window). Any other kind just opens the launcher.
+/// The same file can name `rpcs3 = <rpcs3.exe>` (by default ..\rpcs3\rpcs3.exe) and more
+/// `carpeta_ps3 = <folder>`: every NAME.ps3 folder with a disc game in them, or in `folders`, is
+/// listed to run on RPCS3 (its name from that folder's gamelist.xml, else the disc's).
 struct Ps3Game {
     std::string serial;
     std::string title;
     std::filesystem::path program;
     std::filesystem::path art_folder;
     std::string kind;
+    std::filesystem::path eboot; ///< the game's EBOOT.BIN, for RPCS3
 };
-std::vector<Ps3Game> ReadPs3Games();
+std::vector<Ps3Game> ReadPs3Games(const std::vector<std::filesystem::path>& folders);
 
 /// Starts a PS3 game's port from its own folder and returns once it has ended.
 bool RunPs3Game(const Ps3Game& game);

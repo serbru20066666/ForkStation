@@ -410,7 +410,8 @@ void FillGameDetails(std::vector<IconInfo>& icons) {
     for (auto& icon : icons) {
         if (icon.ps3) {
             icon.external = true;
-            icon.details[0] = fmt::format("{}{}", Tr("Engine: "), "Port nativo de PC");
+            icon.details[0] = fmt::format("{}{}", Tr("Engine: "),
+                                          icon.ps3Kind == "rpcs3" ? "RPCS3" : "Port nativo de PC");
             continue;
         }
         const auto game = ReadJson(GetUserPath(PathType::CustomConfigs) / (icon.serial + ".json"));
@@ -854,13 +855,25 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
         }
     }
 
-    for (const auto& game : Common::ReadPs3Games()) {
+    // PS3 discs beside the PS4 / PS5 folders (roms\ps4 -> roms\ps3).
+    std::vector<std::filesystem::path> ps3_folders;
+    for (const auto& installLoc : EmulatorSettings.GetAllGameInstallDirs()) {
+        const auto name = installLoc.path.filename();
+        std::error_code ps3_error;
+        const auto ps3 = installLoc.path.parent_path() / "ps3";
+        if (installLoc.enabled && (name == "ps4" || name == "ps5") &&
+            std::filesystem::is_directory(ps3, ps3_error)) {
+            ps3_folders.push_back(ps3);
+        }
+    }
+    for (const auto& game : Common::ReadPs3Games(ps3_folders)) {
         IconInfo icon{};
         icon.title = game.title;
         icon.serial = game.serial;
         icon.ebootPath = game.program;
         icon.artFolder = game.art_folder;
         icon.ps3Kind = game.kind;
+        icon.ps3Eboot = game.eboot;
         icon.ps3 = true;
         icon.external = true;
         if (!game.art_folder.empty()) {
@@ -1020,7 +1033,15 @@ SDL_Texture* GameArt(const IconInfo& icon) {
     SDL_Texture* texture = nullptr;
     if (icon.ps3) {
         if (!icon.artFolder.empty()) {
-            texture = LoadSdlTextureDataFromFile(icon.artFolder / "PIC1.PNG");
+            for (const char* name : {"PIC1.PNG", "PIC0.PNG"}) {
+                std::error_code art_error;
+                if (std::filesystem::is_regular_file(icon.artFolder / name, art_error)) {
+                    texture = LoadSdlTextureDataFromFile(icon.artFolder / name);
+                    if (texture) {
+                        break;
+                    }
+                }
+            }
         }
         home.art[icon.serial] = texture;
         return texture;
@@ -2581,8 +2602,8 @@ void Launch(char* executableName, bool sameProcess) {
                 SDL_SetWindowFullscreen(window, false);
                 SDL_HideWindow(window);
                 SDL_SyncWindow(window);
-                Common::RunPs3Game(
-                    {icon.serial, icon.title, icon.ebootPath, icon.artFolder, icon.ps3Kind});
+                Common::RunPs3Game({icon.serial, icon.title, icon.ebootPath, icon.artFolder,
+                                    icon.ps3Kind, icon.ps3Eboot});
                 SDL_ShowWindow(window);
                 SDL_PumpEvents();
                 SDL_FlushEvents(SDL_EVENT_KEY_DOWN, SDL_EVENT_KEY_UP);

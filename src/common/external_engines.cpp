@@ -864,9 +864,30 @@ void PlaceShaderCacheOnLocalDrive(const std::filesystem::path& engine_folder) {
              FS::PathToUTF8String(engine_folder.filename()), FS::PathToUTF8String(local));
 }
 
+/// Asks the windows of a job's processes to close.
+void CloseJobWindows(HANDLE job) {
+    EnumWindows(
+        [](HWND window, LPARAM param) -> BOOL {
+            DWORD pid = 0;
+            GetWindowThreadProcessId(window, &pid);
+            if (!IsWindowVisible(window) || pid == 0) {
+                return TRUE;
+            }
+            if (HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+                BOOL inside = FALSE;
+                if (IsProcessInJob(process, reinterpret_cast<HANDLE>(param), &inside) && inside) {
+                    PostMessageW(window, WM_CLOSE, 0, 0);
+                }
+                CloseHandle(process);
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(job));
+}
+
 bool StartAndWait(const std::filesystem::path& program, const std::vector<std::string>& args,
                   const std::string& title, const std::string& engine_name, bool pad_exit,
-                  const std::filesystem::path& work_folder) {
+                  const std::filesystem::path& work_folder, bool close_first = false) {
     ApplyEnvFile(work_folder);
     std::wstring cmdline = L"\"" + program.wstring() + L"\"";
     for (const auto& arg : args) {
@@ -936,6 +957,12 @@ bool StartAndWait(const std::filesystem::path& program, const std::vector<std::s
         while (running()) {
             if (watch.Pressed()) {
                 LOG_INFO(Common, "Select + Start: ending the game");
+                if (close_first) { // its own way out, so that it finishes writing what it was
+                    CloseJobWindows(job);
+                    for (int i = 0; i < 100 && running(); ++i) {
+                        Sleep(50);
+                    }
+                }
                 TerminateJobObject(job, 0);
                 watch.WaitForRelease();
                 break;
@@ -3093,7 +3120,183 @@ void RefreshRetroBatForkOptions() {
     }).detach();
 }
 
-std::vector<Ps3Game> ReadPs3Games() {
+namespace {
+
+/// The text entries of a PS3 PARAM.SFO.
+std::map<std::string, std::string> ReadPs3Sfo(const std::filesystem::path& path) {
+    std::map<std::string, std::string> out;
+    std::ifstream in{path, std::ios::binary};
+    const std::string data{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    if (data.size() < 20 || data.compare(0, 4, std::string_view{"\0PSF", 4}) != 0) {
+        return out;
+    }
+    const auto read32 = [&](size_t at) -> unsigned {
+        return at + 4 > data.size()
+                   ? 0u
+                   : static_cast<unsigned>(static_cast<unsigned char>(data[at])) |
+                         static_cast<unsigned>(static_cast<unsigned char>(data[at + 1])) << 8 |
+                         static_cast<unsigned>(static_cast<unsigned char>(data[at + 2])) << 16 |
+                         static_cast<unsigned>(static_cast<unsigned char>(data[at + 3])) << 24;
+    };
+    const unsigned keys = read32(8), values = read32(12), count = read32(16);
+    for (unsigned i = 0; i < count && 20 + 16 * (i + 1) <= data.size(); ++i) {
+        const size_t entry = 20 + 16 * i;
+        const size_t key_at = keys + (static_cast<unsigned char>(data[entry]) |
+                                      static_cast<unsigned char>(data[entry + 1]) << 8);
+        const unsigned format = static_cast<unsigned char>(data[entry + 2]) |
+                                static_cast<unsigned char>(data[entry + 3]) << 8;
+        const unsigned length = read32(entry + 4);
+        const size_t value_at = values + read32(entry + 12);
+        if (format != 0x0204 || key_at >= data.size() || value_at + length > data.size()) {
+            continue;
+        }
+        const std::string key = data.substr(key_at, data.find('\0', key_at) - key_at);
+        std::string value = data.substr(value_at, length);
+        value.resize(value.find('\0') == std::string::npos ? value.size() : value.find('\0'));
+        out[key] = std::move(value);
+    }
+    return out;
+}
+
+/// Whether RPCS3 can load this EBOOT.BIN: a SELF or an ELF. A dump that kept the disc's encryption
+/// starts with anything else and RPCS3 stays open with no window.
+bool IsLoadableEboot(const std::filesystem::path& path) {
+    std::ifstream in{path, std::ios::binary};
+    std::array<char, 4> magic{};
+    if (!in.read(magic.data(), magic.size())) {
+        return false;
+    }
+    const std::string_view head{magic.data(), magic.size()};
+    return head == std::string_view{"SCE\0", 4} || head == "\x7F" "ELF";
+}
+
+/// A disc's title without its marks and anything that is not plain text.
+std::string CleanPs3Title(const std::string& title) {
+    std::string out;
+    for (const char c : title) {
+        const auto b = static_cast<unsigned char>(c);
+        if (b == '\n' || b == '\r') {
+            out += ' ';
+        } else if (b >= 0x20 && b < 0x80) {
+            out += c;
+        }
+    }
+    return Trim(out);
+}
+
+/// The names a RetroBat gamelist.xml gives its games, by folder name.
+std::map<std::string, std::string> ReadGamelistNames(const std::filesystem::path& file) {
+    std::map<std::string, std::string> names;
+    std::ifstream in{file, std::ios::binary};
+    const std::string xml{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    const auto field = [](const std::string& block, const std::string& tag) {
+        const auto open = "<" + tag + ">";
+        const auto start = block.find(open);
+        const auto end = block.find("</" + tag + ">");
+        return start == std::string::npos || end == std::string::npos || end < start
+                   ? std::string{}
+                   : block.substr(start + open.size(), end - start - open.size());
+    };
+    for (size_t at = xml.find("<game"); at != std::string::npos; at = xml.find("<game", at + 1)) {
+        const auto end = xml.find("</game>", at);
+        if (end == std::string::npos) {
+            break;
+        }
+        const std::string block = xml.substr(at, end - at);
+        std::string where = field(block, "path");
+        std::string name = field(block, "name");
+        for (auto [from, to] : {std::pair{"&amp;", "&"}, std::pair{"&apos;", "'"},
+                                std::pair{"&quot;", "\""}}) {
+            for (auto& text : {&where, &name}) {
+                for (size_t p = text->find(from); p != std::string::npos; p = text->find(from, p)) {
+                    text->replace(p, std::string_view{from}.size(), to);
+                    ++p;
+                }
+            }
+        }
+        if (where.starts_with("./")) {
+            where.erase(0, 2);
+        }
+        while (!where.empty() && where.back() == '/') {
+            where.pop_back();
+        }
+        if (!where.empty() && !name.empty()) {
+            names[where] = name;
+        }
+    }
+    return names;
+}
+
+/// RPCS3 keeps dev_hdd0 (the saves) as an absolute path: on a portable drive whose letter changed
+/// it goes to the same path on RPCS3's own drive.
+void FixRpcs3HddPath(const std::filesystem::path& rpcs3) {
+    const auto vfs = rpcs3.parent_path() / "config" / "vfs.yml";
+    std::ifstream in{vfs, std::ios::binary};
+    std::vector<std::string> lines;
+    std::string line;
+    bool changed = false;
+    while (in && std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        constexpr std::string_view key = "/dev_hdd0/:";
+        if (line.starts_with(key)) {
+            const std::string value = Trim(line.substr(key.size()));
+            const std::filesystem::path stored{std::u8string{value.begin(), value.end()}};
+            std::error_code ec;
+            if (stored.has_root_name() && !std::filesystem::exists(stored.root_path(), ec)) {
+                const auto moved = rpcs3.root_path() / stored.relative_path();
+                if (std::filesystem::is_directory(moved, ec)) {
+                    line = std::string{key} + " " + moved.generic_string();
+                    changed = true;
+                }
+            }
+        }
+        lines.push_back(line);
+    }
+    in.close();
+    if (changed) {
+        std::string text;
+        for (const auto& l : lines) {
+            text += l + "\n";
+        }
+        WriteText(vfs, text);
+    }
+}
+
+/// A config saved on a PC with another graphics card names that card, and RPCS3 then replaces its
+/// renderer over and over (the game never leaves its loading screen): the card is left to RPCS3.
+void ClearRpcs3Adapter(const std::filesystem::path& config) {
+    std::ifstream in{config, std::ios::binary};
+    if (!in) {
+        return;
+    }
+    std::string text, line;
+    bool changed = false;
+    while (std::getline(in, line)) {
+        const bool cr = !line.empty() && line.back() == '\r';
+        if (cr) {
+            line.pop_back();
+        }
+        const auto indent = line.find_first_not_of(' ');
+        if (indent != std::string::npos && line.compare(indent, 8, "Adapter:") == 0) {
+            const std::string value = Trim(line.substr(indent + 8));
+            if (!value.empty() && value != "\"\"") {
+                line = line.substr(0, indent) + "Adapter: \"\"";
+                changed = true;
+            }
+        }
+        text += line + (cr ? "\r\n" : "\n");
+    }
+    in.close();
+    if (changed) {
+        WriteText(config, text);
+    }
+}
+
+} // namespace
+
+std::vector<Ps3Game> ReadPs3Games(const std::vector<std::filesystem::path>& folders) {
     const auto folder = ExecutableFolder();
     const auto from_text = [&](const std::string& text) {
         if (text.empty()) {
@@ -3103,12 +3306,23 @@ std::vector<Ps3Game> ReadPs3Games() {
         return (path.is_absolute() ? path : folder / path).lexically_normal();
     };
     std::vector<Ps3Game> games;
+    auto scan_folders = folders;
+    auto rpcs3 = (folder.parent_path() / "rpcs3" / "rpcs3.exe").lexically_normal();
     std::ifstream in{folder / "juegos_ps3.ini"};
     std::string line;
     while (in && std::getline(in, line)) {
         line = Trim(line);
         const auto equals = line.find('=');
         if (line.empty() || line.front() == '#' || equals == std::string::npos) {
+            continue;
+        }
+        const std::string setting = Trim(line.substr(0, equals));
+        if (setting == "rpcs3") {
+            rpcs3 = from_text(Trim(line.substr(equals + 1)));
+            continue;
+        }
+        if (setting == "carpeta_ps3") {
+            scan_folders.push_back(from_text(Trim(line.substr(equals + 1))));
             continue;
         }
         const std::string rest = line.substr(equals + 1);
@@ -3136,12 +3350,76 @@ std::vector<Ps3Game> ReadPs3Games() {
             games.push_back(std::move(game));
         }
     }
+
+    // The discs in the folders: on RPCS3, once each.
+    std::error_code ec;
+    const bool has_rpcs3 = std::filesystem::is_regular_file(rpcs3, ec);
+    std::set<std::filesystem::path> seen;
+    for (const auto& scan : scan_folders) {
+        const auto real = std::filesystem::canonical(scan, ec);
+        if (ec || !seen.insert(real).second) {
+            continue;
+        }
+        const auto names = ReadGamelistNames(scan / "gamelist.xml");
+        for (std::filesystem::directory_iterator it{scan, ec}, end; !ec && it != end;
+             it.increment(ec)) {
+            std::error_code entry_ec;
+            if (!it->is_directory(entry_ec) || it->path().extension() != ".ps3") {
+                continue;
+            }
+            const auto disc = it->path() / "PS3_GAME";
+            const auto eboot = disc / "USRDIR" / "EBOOT.BIN";
+            if (!std::filesystem::is_regular_file(eboot, entry_ec)) {
+                continue;
+            }
+            auto sfo = ReadPs3Sfo(disc / "PARAM.SFO");
+            const std::string serial = sfo["TITLE_ID"];
+            if (serial.empty()) {
+                continue;
+            }
+            const auto known = std::ranges::find(games, serial, &Ps3Game::serial);
+            if (known != games.end()) {
+                if (known->art_folder.empty() ||
+                    !std::filesystem::is_directory(known->art_folder, entry_ec)) {
+                    known->art_folder = disc; // a port's disc, wherever it is today
+                }
+                continue;
+            }
+            if (!has_rpcs3 || !IsLoadableEboot(eboot)) {
+                continue;
+            }
+            const auto named = names.find(FS::PathToUTF8String(it->path().filename()));
+            Ps3Game game;
+            game.serial = serial;
+            game.title = named != names.end() ? named->second : CleanPs3Title(sfo["TITLE"]);
+            game.program = rpcs3;
+            game.art_folder = disc;
+            game.kind = "rpcs3";
+            game.eboot = eboot;
+            games.push_back(std::move(game));
+        }
+    }
     return games;
 }
 
 bool RunPs3Game(const Ps3Game& game) {
 #ifdef _WIN32
     std::vector<std::string> args;
+    if (game.kind == "rpcs3") {
+        FixRpcs3HddPath(game.program);
+        ClearRpcs3Adapter(game.program.parent_path() / "config" / "config.yml");
+        args = {FS::PathToUTF8String(game.eboot), "--no-gui", "--fullscreen"};
+        const auto config = game.program.parent_path() / "config" / "custom_configs" /
+                            ("config_" + game.serial + ".yml");
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(config, ec)) {
+            ClearRpcs3Adapter(config);
+            args.emplace_back("--config");
+            args.push_back(FS::PathToUTF8String(config));
+        }
+        return StartAndWait(game.program, args, game.title, "RPCS3", true,
+                            game.program.parent_path(), true);
+    }
     if (game.kind == "ascension") {
         const auto folder = game.program.parent_path();
         const auto settings_path = folder / "settings.json";
