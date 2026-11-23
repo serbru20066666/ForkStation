@@ -743,8 +743,7 @@ public:
         if (!ready) {
             return false;
         }
-        SDL_PumpEvents();
-        SDL_UpdateGamepads();
+        Pump();
         int count = 0;
         if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
             for (int i = 0; i < count; ++i) {
@@ -756,16 +755,40 @@ public:
             }
             SDL_free(ids);
         }
-        bool both = false;
-        for (auto& [id, pad] : pads) {
-            both |= SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_BACK) &&
-                    SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START);
-        }
-        held = both ? held + 1 : 0;
+        held = BothDown() ? held + 1 : 0;
         return held >= 6; // about 0.3 s at one check every 50 ms
     }
 
+    /// Until the buttons are let go (at most 3 s): a launcher that comes back must not take them
+    /// for a press of its own.
+    void WaitForRelease() {
+        for (int i = 0; ready && i < 60; ++i) {
+            Pump();
+            if (!BothDown()) {
+                return;
+            }
+            Sleep(50);
+        }
+    }
+
 private:
+    void Pump() {
+        SDL_PumpEvents();
+        SDL_UpdateGamepads();
+        // Only the state is read here: the game's whole session must not pile up in the queue.
+        SDL_FlushEvents(SDL_EVENT_JOYSTICK_AXIS_MOTION, SDL_EVENT_JOYSTICK_BUTTON_UP);
+        SDL_FlushEvents(SDL_EVENT_GAMEPAD_AXIS_MOTION, SDL_EVENT_GAMEPAD_BUTTON_UP);
+    }
+
+    bool BothDown() const {
+        bool both = false;
+        for (const auto& [id, pad] : pads) {
+            both |= SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_BACK) &&
+                    SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_START);
+        }
+        return both;
+    }
+
     bool ready = false;
     int held = 0;
     std::map<SDL_JoystickID, SDL_Gamepad*> pads;
@@ -914,6 +937,7 @@ bool StartAndWait(const std::filesystem::path& program, const std::vector<std::s
             if (watch.Pressed()) {
                 LOG_INFO(Common, "Select + Start: ending the game");
                 TerminateJobObject(job, 0);
+                watch.WaitForRelease();
                 break;
             }
             Sleep(50);
@@ -3154,7 +3178,8 @@ bool RunPs3Game(const Ps3Game& game) {
         }
         args.emplace_back("--play");
     }
-    return StartAndWait(game.program, args, game.title, "su port de PC", false,
+    // Select + Start leaves the game, back to the launcher.
+    return StartAndWait(game.program, args, game.title, "su port de PC", true,
                         game.program.parent_path());
 #else
     return false;
