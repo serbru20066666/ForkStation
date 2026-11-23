@@ -3264,6 +3264,158 @@ void FixRpcs3HddPath(const std::filesystem::path& rpcs3) {
     }
 }
 
+/// The controller connected now, as RPCS3 names it, with its buttons in the order of `Rpcs3Keys`.
+struct Rpcs3Pad {
+    std::string handler;
+    std::string device;
+    std::array<const char*, 17> buttons;
+};
+constexpr std::array<const char*, 17> Rpcs3Keys{
+    "Start", "Select", "PS Button", "Square", "Cross", "Circle", "Triangle", "Left", "Down",
+    "Right", "Up",     "R1",        "R2",     "R3",    "L1",     "L2",       "L3"};
+constexpr std::array<const char*, 17> Rpcs3PlayStationButtons{
+    "Options", "Share", "PS Button", "Square", "Cross", "Circle", "Triangle", "Left", "Down",
+    "Right",   "Up",    "R1",        "R2",     "R3",    "L1",     "L2",       "L3"};
+constexpr std::array<const char*, 17> Rpcs3XInputButtons{
+    "Start", "Back", "Guide", "X",  "A",  "B",  "Y",  "Left", "Down",
+    "Right", "Up",   "RB",    "RT", "RS", "LB", "LT", "LS"};
+constexpr std::array<const char*, 17> Rpcs3SdlButtons{
+    "Start", "Back", "Guide", "West", "South", "East", "North", "Left", "Down",
+    "Right", "Up",   "RB",    "RT",   "RS",    "LB",   "LT",    "LS"};
+
+std::optional<Rpcs3Pad> ConnectedRpcs3Pad() {
+    const auto from_type = [](SDL_GamepadType type, const std::string& name) -> Rpcs3Pad {
+        switch (type) {
+        case SDL_GAMEPAD_TYPE_PS5:
+            return {"DualSense", "DualSense Pad #1", Rpcs3PlayStationButtons};
+        case SDL_GAMEPAD_TYPE_PS4:
+            return {"DS4", "DS4 Pad #1", Rpcs3PlayStationButtons};
+        case SDL_GAMEPAD_TYPE_XBOX360:
+        case SDL_GAMEPAD_TYPE_XBOXONE:
+            return {"XInput", "XInput Pad #1", Rpcs3XInputButtons};
+        default:
+            return {"SDL", name + " 1", Rpcs3SdlButtons};
+        }
+    };
+    // Without a controller at hand: FORKSTATION_DEBUG_PAD=ps5, ps4, xbox or any other name.
+    if (const char* debug = std::getenv("FORKSTATION_DEBUG_PAD"); debug && *debug) {
+        const std::string_view name{debug};
+        return from_type(name == "ps5"    ? SDL_GAMEPAD_TYPE_PS5
+                         : name == "ps4"  ? SDL_GAMEPAD_TYPE_PS4
+                         : name == "xbox" ? SDL_GAMEPAD_TYPE_XBOXONE
+                                          : SDL_GAMEPAD_TYPE_STANDARD,
+                         debug);
+    }
+    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+        return std::nullopt;
+    }
+    SDL_PumpEvents();
+    std::optional<Rpcs3Pad> pad;
+    int count = 0;
+    if (SDL_JoystickID* ids = SDL_GetGamepads(&count)) {
+        if (count > 0) {
+            const char* name = SDL_GetGamepadNameForID(ids[0]);
+            pad = from_type(SDL_GetGamepadTypeForID(ids[0]), name ? name : "Gamepad");
+        }
+        SDL_free(ids);
+    }
+    SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+    return pad;
+}
+
+/// When the controller connected now is not the one RPCS3 has as player 1, writes a copy of its
+/// active input profile with that controller (ForkStation.yml; the profile itself is not changed)
+/// and returns its name for --input-config. A game with an input profile of its own keeps it.
+std::optional<std::string> Rpcs3PadProfile(const std::filesystem::path& rpcs3,
+                                           const std::string& serial) {
+    const auto input = rpcs3.parent_path() / "config" / "input_configs";
+    std::error_code ec;
+    if (std::filesystem::is_directory(input / serial, ec)) {
+        return std::nullopt;
+    }
+    std::string active = "Default";
+    {
+        std::ifstream in{input / "active_input_configurations.yml"};
+        std::string line;
+        while (in && std::getline(in, line)) {
+            line = Trim(line);
+            if (line.starts_with(serial + ":")) {
+                return std::nullopt;
+            }
+            if (line.starts_with("global:")) {
+                active = Trim(line.substr(7));
+            }
+        }
+    }
+    if (active.size() >= 2 && active.front() == '"' && active.back() == '"') {
+        active = active.substr(1, active.size() - 2);
+    }
+    std::ifstream in{input / "global" / (active + ".yml"), std::ios::binary};
+    if (!in) {
+        return std::nullopt;
+    }
+    const auto pad = ConnectedRpcs3Pad();
+    if (!pad) {
+        return std::nullopt; // none connected: what RPCS3 has
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        lines.push_back(line);
+    }
+    const auto unquote = [](std::string value) {
+        value = Trim(value);
+        if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+            value = value.substr(1, value.size() - 2);
+        }
+        return value;
+    };
+    bool player_one = false, in_section = false, same_handler = false, same_device = false;
+    for (auto& l : lines) {
+        if (l == "Player 1 Input:") {
+            player_one = in_section = true;
+            continue;
+        }
+        if (!in_section) {
+            continue;
+        }
+        if (l.starts_with("Player ") || l.starts_with("  Buddy Device:")) {
+            in_section = false;
+            continue;
+        }
+        if (l.starts_with("  Handler:")) {
+            same_handler = unquote(l.substr(10)) == pad->handler;
+            l = "  Handler: " + pad->handler;
+        } else if (l.starts_with("  Device:")) {
+            same_device = unquote(l.substr(9)) == pad->device;
+            l = "  Device: \"" + pad->device + "\"";
+        } else {
+            for (size_t k = 0; k < Rpcs3Keys.size(); ++k) {
+                const std::string key = std::string{"    "} + Rpcs3Keys[k] + ":";
+                if (l.starts_with(key)) {
+                    l = key + " " + pad->buttons[k];
+                    break;
+                }
+            }
+        }
+    }
+    if (!player_one || (same_handler && same_device)) {
+        return std::nullopt;
+    }
+    std::string out;
+    for (const auto& l : lines) {
+        out += l + "\n";
+    }
+    if (!WriteText(input / "global" / "ForkStation.yml", out)) {
+        return std::nullopt;
+    }
+    LOG_INFO(Common, "RPCS3 player 1: {} ({})", pad->device, pad->handler);
+    return "ForkStation";
+}
+
 /// A config saved on a PC with another graphics card names that card, and RPCS3 then replaces its
 /// renderer over and over (the game never leaves its loading screen): the card is left to RPCS3.
 void ClearRpcs3Adapter(const std::filesystem::path& config) {
@@ -3416,6 +3568,10 @@ bool RunPs3Game(const Ps3Game& game) {
             ClearRpcs3Adapter(config);
             args.emplace_back("--config");
             args.push_back(FS::PathToUTF8String(config));
+        }
+        if (const auto profile = Rpcs3PadProfile(game.program, game.serial)) {
+            args.emplace_back("--input-config");
+            args.push_back(*profile);
         }
         return StartAndWait(game.program, args, game.title, "RPCS3", true,
                             game.program.parent_path(), true);
