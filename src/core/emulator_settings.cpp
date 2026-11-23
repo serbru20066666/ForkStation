@@ -14,6 +14,7 @@
 #include "emulator_settings.h"
 #include "emulator_state.h"
 
+#include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_messagebox.h>
 
 using json = nlohmann::json;
@@ -176,11 +177,33 @@ const std::vector<bool> EmulatorSettingsImpl::GetGameInstallDirsEnabled() {
     return enabled_dirs;
 }
 
-std::filesystem::path EmulatorSettingsImpl::GetHomeDir() {
-    if (m_general.home_dir.value.empty()) {
-        return Common::FS::GetUserPath(Common::FS::PathType::HomeDir);
+/// A folder saved in the settings, on a portable install whose drive may have another letter now:
+/// when its drive is not there, the same path on the executable's drive, or else `fallback`. The
+/// settings file keeps what it had.
+static std::filesystem::path OnReachableDrive(const std::filesystem::path& stored,
+                                              const std::filesystem::path& fallback) {
+    std::error_code ec;
+    const auto root = stored.root_path();
+    if (root.empty() || std::filesystem::exists(root, ec)) {
+        return stored;
     }
-    return m_general.home_dir.value;
+    if (const char* base = SDL_GetBasePath()) {
+        const std::string text{base};
+        const std::filesystem::path folder{std::u8string{text.begin(), text.end()}};
+        const auto moved = folder.root_path() / stored.relative_path();
+        if (std::filesystem::exists(moved, ec)) {
+            return moved;
+        }
+    }
+    return fallback;
+}
+
+std::filesystem::path EmulatorSettingsImpl::GetHomeDir() {
+    const auto fallback = Common::FS::GetUserPath(Common::FS::PathType::HomeDir);
+    if (m_general.home_dir.value.empty()) {
+        return fallback;
+    }
+    return OnReachableDrive(m_general.home_dir.value, fallback);
 }
 
 void EmulatorSettingsImpl::SetHomeDir(const std::filesystem::path& dir) {
@@ -191,7 +214,8 @@ std::filesystem::path EmulatorSettingsImpl::GetSysModulesDir() {
     if (m_general.sys_modules_dir.value.empty()) {
         return Common::FS::GetUserPath(Common::FS::PathType::SysModuleDir);
     }
-    return m_general.sys_modules_dir.value;
+    return OnReachableDrive(m_general.sys_modules_dir.value,
+                            Common::FS::GetUserPath(Common::FS::PathType::SysModuleDir));
 }
 
 void EmulatorSettingsImpl::SetSysModulesDir(const std::filesystem::path& dir) {
@@ -213,7 +237,8 @@ std::filesystem::path EmulatorSettingsImpl::GetAddonInstallDir() {
     if (m_general.addon_install_dir.value.empty()) {
         return Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "addcont";
     }
-    return m_general.addon_install_dir.value;
+    return OnReachableDrive(m_general.addon_install_dir.value,
+                            Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "addcont");
 }
 
 void EmulatorSettingsImpl::SetAddonInstallDir(const std::filesystem::path& dir) {
