@@ -3069,4 +3069,96 @@ void RefreshRetroBatForkOptions() {
     }).detach();
 }
 
+std::vector<Ps3Game> ReadPs3Games() {
+    const auto folder = ExecutableFolder();
+    const auto from_text = [&](const std::string& text) {
+        if (text.empty()) {
+            return std::filesystem::path{};
+        }
+        const std::filesystem::path path{std::u8string{text.begin(), text.end()}};
+        return (path.is_absolute() ? path : folder / path).lexically_normal();
+    };
+    std::vector<Ps3Game> games;
+    std::ifstream in{folder / "juegos_ps3.ini"};
+    std::string line;
+    while (in && std::getline(in, line)) {
+        line = Trim(line);
+        const auto equals = line.find('=');
+        if (line.empty() || line.front() == '#' || equals == std::string::npos) {
+            continue;
+        }
+        const std::string rest = line.substr(equals + 1);
+        const auto bar = rest.find('|');
+        if (bar == std::string::npos) {
+            continue;
+        }
+        const std::string after = rest.substr(bar + 1);
+        const auto bar2 = after.find('|');
+        Ps3Game game;
+        game.serial = Trim(line.substr(0, equals));
+        game.title = Trim(rest.substr(0, bar));
+        game.program = from_text(Trim(after.substr(0, bar2)));
+        if (bar2 != std::string::npos) {
+            const std::string last = after.substr(bar2 + 1);
+            const auto bar3 = last.find('|');
+            game.art_folder = from_text(Trim(last.substr(0, bar3)));
+            if (bar3 != std::string::npos) {
+                game.kind = Trim(last.substr(bar3 + 1));
+            }
+        }
+        std::error_code ec;
+        if (!game.serial.empty() && !game.title.empty() &&
+            std::filesystem::is_regular_file(game.program, ec)) {
+            games.push_back(std::move(game));
+        }
+    }
+    return games;
+}
+
+bool RunPs3Game(const Ps3Game& game) {
+#ifdef _WIN32
+    std::vector<std::string> args;
+    if (game.kind == "ascension") {
+        const auto folder = game.program.parent_path();
+        const auto settings_path = folder / "settings.json";
+        auto settings = ReadJsonFile(settings_path);
+        const std::string scale = settings.value("render_scale", std::string{"300"});
+        const auto choice = ChooseResolution(game.title, scale == "150"   ? "1080p"
+                                                         : scale == "200" ? "1440p"
+                                                                          : "4K");
+        if (!choice) {
+            return true; // went back: to the home screen
+        }
+        settings["render_scale"] = *choice == "1080p" ? "150" : *choice == "1440p" ? "200" : "300";
+        settings["display_mode"] = "fullscreen";
+        settings["display_match"] = "1";
+        settings["fps_cap"] = "60";
+        settings["smaa"] = "1";
+        settings["aniso"] = "16";
+        settings["sharpen"] = "80";
+        // The port keeps absolute paths: right for wherever the drive is today.
+        const auto port = folder / "ascension-recomp";
+        settings["game_exe"] = FS::PathToUTF8String(port / "ascension" / "build" / "win" /
+                                                    "AscensionRecomp.exe");
+        settings["eboot"] = FS::PathToUTF8String(port / "work" / "eboot" / "EBOOT.ELF");
+        settings["mods_dir"] = FS::PathToUTF8String(port / "ascension" / "mods");
+        if (!game.art_folder.empty()) {
+            const auto disc = FS::PathToUTF8String(game.art_folder.parent_path());
+            settings["disc_dir"] = disc;
+            settings["game_source"] = disc;
+            settings["disc_iso"] = "";
+        }
+        if (!WriteText(settings_path, settings.dump(2))) {
+            LOG_ERROR(Common, "Could not write the settings of {}", game.title);
+            return false;
+        }
+        args.emplace_back("--play");
+    }
+    return StartAndWait(game.program, args, game.title, "su port de PC", false,
+                        game.program.parent_path());
+#else
+    return false;
+#endif
+}
+
 } // namespace Common

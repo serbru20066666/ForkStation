@@ -29,7 +29,16 @@ struct IconInfo {
     bool external{};
     /// A PS5 game (sce_sys/param.json): listed in its own section after the PS4 games.
     bool ps5{};
+    /// A PS3 game with a native port (juegos_ps3.ini): `ebootPath` is the port's launcher.
+    bool ps3{};
+    std::filesystem::path artFolder;
+    std::string ps3Kind;
 };
+
+/// The home screen's tab of a game: 0 PS4, 1 PS5, 2 PS3.
+inline int ConsoleTab(const IconInfo& icon) {
+    return icon.ps3 ? 2 : icon.ps5 ? 1 : 0;
+}
 
 void Launch(char* executableName, bool sameProcess);
 /// Opens only the update window of the game's fork (RetroBat's "Actualizar fork desde su GitHub"

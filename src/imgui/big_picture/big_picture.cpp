@@ -11,6 +11,7 @@
 #include <regex>
 #include <set>
 #include <sstream>
+#include <utility>
 #include <nlohmann/json.hpp>
 #include <stb_image.h>
 
@@ -47,6 +48,7 @@ bool showSettings = false;
 std::filesystem::path runEbootPath = "";
 std::string runSerial = "";
 std::vector<IconInfo> gameIcons = {};
+int ps3Launch = -1; ///< the PS3 game to start between frames
 
 float uiScale = 1.0f;
 SDL_Renderer* renderer;
@@ -406,6 +408,11 @@ void FillGameDetails(std::vector<IconInfo>& icons) {
     const std::string own_version = CleanEmulatorVersion();
 
     for (auto& icon : icons) {
+        if (icon.ps3) {
+            icon.external = true;
+            icon.details[0] = fmt::format("{}{}", Tr("Engine: "), "Port nativo de PC");
+            continue;
+        }
         const auto game = ReadJson(GetUserPath(PathType::CustomConfigs) / (icon.serial + ".json"));
         try {
             const bool full_screen =
@@ -539,14 +546,17 @@ void SetGameIcons(std::vector<IconInfo>& gameIcons, int& settingsFor, int& sugge
     float rowWidth = 0.0f;
 
     // With PS5 games in the list, each console gets its own section with a heading.
-    const bool sections = std::ranges::any_of(gameIcons, &IconInfo::ps5);
+    const bool sections = std::ranges::any_of(
+        gameIcons, [](const IconInfo& icon) { return ConsoleTab(icon) != 0; });
     for (int i = 0; i < gameIcons.size(); i++) {
-        if (sections && (i == 0 || gameIcons[i].ps5 != gameIcons[i - 1].ps5)) {
+        if (sections && (i == 0 || ConsoleTab(gameIcons[i]) != ConsoleTab(gameIcons[i - 1]))) {
             if (i > 0) {
                 ImGui::Dummy(ImVec2(0.0f, gap * 1.5f));
             }
             ImGui::SetWindowFontScale(uiScale * 1.15f);
-            ImGui::TextUnformatted(gameIcons[i].ps5 ? "PlayStation 5" : "PlayStation 4");
+            ImGui::TextUnformatted(gameIcons[i].ps3   ? "PlayStation 3"
+                                   : gameIcons[i].ps5 ? "PlayStation 5"
+                                                      : "PlayStation 4");
             ImGui::SetWindowFontScale(uiScale);
             const ImVec2 under = ImGui::GetCursorScreenPos();
             draw_list->AddLine({under.x, under.y + 2.0f * uiScale},
@@ -769,7 +779,8 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
     icons.clear();
 
     for (const auto& installLoc : EmulatorSettings.GetAllGameInstallDirs()) {
-        if (installLoc.enabled && std::filesystem::exists(installLoc.path)) {
+        std::error_code exists_error; // a saved folder's drive may not be ready
+        if (installLoc.enabled && std::filesystem::exists(installLoc.path, exists_error)) {
             for (const auto& entry : std::filesystem::directory_iterator(installLoc.path)) {
 
                 std::string pathstring = entry.path().filename().string();
@@ -837,9 +848,24 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
         }
     }
 
+    for (const auto& game : Common::ReadPs3Games()) {
+        IconInfo icon{};
+        icon.title = game.title;
+        icon.serial = game.serial;
+        icon.ebootPath = game.program;
+        icon.artFolder = game.art_folder;
+        icon.ps3Kind = game.kind;
+        icon.ps3 = true;
+        icon.external = true;
+        if (!game.art_folder.empty()) {
+            icon.textureId = ImTextureID(LoadSdlTextureDataFromFile(game.art_folder / "ICON0.PNG"));
+        }
+        icons.push_back(std::move(icon));
+    }
+
     std::sort(icons.begin(), icons.end(), [](const IconInfo& a, const IconInfo& b) {
-        if (a.ps5 != b.ps5) {
-            return !a.ps5; // PS4 games first, then the PS5 section
+        if (ConsoleTab(a) != ConsoleTab(b)) {
+            return ConsoleTab(a) < ConsoleTab(b); // PS4, then PS5, then PS3
         }
         return a.title < b.title; // Alphabetical order
     });
@@ -849,7 +875,9 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
     // Once per session, in the background: which engines have a newer release on GitHub.
     std::vector<std::string> serials;
     for (const auto& icon : icons) {
-        serials.push_back(icon.serial);
+        if (!icon.ps3) { // a PS3 port updates from its own launcher
+            serials.push_back(icon.serial);
+        }
     }
     Common::StartUpdateChecks(serials);
 }
@@ -859,8 +887,8 @@ void GetGameIconInfo(std::vector<IconInfo>& icons) {
 namespace {
 
 struct Home {
-    int tab = -1;                            ///< 0: PS4 games, 1: PS5 games
-    std::array<int, 2> selected{};           ///< the chosen tile of each tab
+    int tab = -1;                            ///< 0: PS4 games, 1: PS5 games, 2: PS3 games
+    std::array<int, 3> selected{};           ///< the chosen tile of each tab
     std::map<std::string, SDL_Texture*> art; ///< by serial (nullptr: the game has none)
     SDL_Texture* shown = nullptr;
     SDL_Texture* previous = nullptr;
@@ -933,6 +961,13 @@ SDL_Texture* GameArt(const IconInfo& icon) {
         root = root.parent_path();
     }
     SDL_Texture* texture = nullptr;
+    if (icon.ps3) {
+        if (!icon.artFolder.empty()) {
+            texture = LoadSdlTextureDataFromFile(icon.artFolder / "PIC1.PNG");
+        }
+        home.art[icon.serial] = texture;
+        return texture;
+    }
     for (const char* name : {"sce_sys/pic1.png", "sce_sys/pic0.png"}) {
         if (const auto data = Core::FileSys::ReadGameFile(root, name); data && !data->empty()) {
             texture = LoadSdlTextureData(*data);
@@ -1538,13 +1573,30 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
     const ImVec2 end{origin.x + size.x, origin.y + size.y};
 
     // The tabs: the consoles that have games.
-    std::array<std::vector<int>, 2> lists;
+    std::array<std::vector<int>, 3> lists;
     for (int i = 0; i < static_cast<int>(gameIcons.size()); ++i) {
-        lists[gameIcons[i].ps5 ? 1 : 0].push_back(i);
+        lists[ConsoleTab(gameIcons[i])].push_back(i);
     }
     if (home.tab < 0 || lists[home.tab].empty()) {
-        home.tab = lists[0].empty() ? 1 : 0;
+        const auto first = std::ranges::find_if(lists, [](const auto& l) { return !l.empty(); });
+        home.tab = first == lists.end() ? 0 : static_cast<int>(first - lists.begin());
     }
+    // The next tab with games in a direction (-1 or +1), or the same one if there is none.
+    const auto next_tab = [&](int from, int step, bool wrap) {
+        const int count = static_cast<int>(lists.size());
+        for (int k = 1; k < count; ++k) {
+            int t = from + step * k;
+            if (wrap) {
+                t = (t + count) % count;
+            } else if (t < 0 || t >= count) {
+                break;
+            }
+            if (!lists[t].empty()) {
+                return t;
+            }
+        }
+        return from;
+    };
     auto& list = lists[home.tab];
     home.grow.resize(gameIcons.size(), 0.0f);
     int& sel = home.selected[home.tab];
@@ -1589,13 +1641,12 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
             }
         }
         home.item = std::clamp(home.item, 0, std::max(0, count_here - 1));
-        const bool other_tab = !lists[1 - home.tab].empty();
-        if (other_tab && ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) && home.tab == 0) {
-            home.tab = 1;
-        } else if (other_tab && ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false) && home.tab == 1) {
-            home.tab = 0;
-        } else if (other_tab && ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
-            home.tab = 1 - home.tab;
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) {
+            home.tab = next_tab(home.tab, 1, false);
+        } else if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) {
+            home.tab = next_tab(home.tab, -1, false);
+        } else if (ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
+            home.tab = next_tab(home.tab, 1, true);
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
             ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false)) {
@@ -1635,7 +1686,9 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         }
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft, false) ||
             ImGui::IsKeyPressed(ImGuiKey_U, false)) {
-            updateFor = list[sel];
+            if (!gameIcons[list[sel]].ps3) {
+                updateFor = list[sel];
+            }
         }
         if ((ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false) ||
              ImGui::IsKeyPressed(ImGuiKey_S, false)) &&
@@ -1707,11 +1760,11 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         dl->AddRect({min.x - 8.0f * s, min.y - 6.0f * s}, {max.x + 8.0f * s, max.y + 6.0f * s},
                     IM_COL32(255, 255, 255, 240), rounding, 0, 2.5f * s);
     };
-    for (int t = 0; t < 2; ++t) {
+    for (int t = 0; t < static_cast<int>(lists.size()); ++t) {
         if (lists[t].empty()) {
             continue;
         }
-        const char* label = t == 0 ? "Juegos de PS4" : "Juegos de PS5";
+        const char* label = t == 0 ? "Juegos de PS4" : t == 1 ? "Juegos de PS5" : "Juegos de PS3";
         ImGui::SetWindowFontScale(s * (t == home.tab ? 0.62f : 0.56f));
         const ImVec2 ts = ImGui::CalcTextSize(label);
         ImGui::SetCursorScreenPos({x, bar_y});
@@ -1875,7 +1928,10 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
     y = ImGui::GetCursorScreenPos().y + 6.0f * s;
     ImGui::SetWindowFontScale(s * 0.5f);
     const std::string engine_line =
-        fmt::format("{}   ·   {}", game.ps5 ? "PlayStation 5" : "PlayStation 4",
+        fmt::format("{}   ·   {}",
+                    game.ps3   ? "PlayStation 3"
+                    : game.ps5 ? "PlayStation 5"
+                               : "PlayStation 4",
                     SplitDetail(game.details[0]).second);
     dl->AddText({info_x, y}, IM_COL32(255, 255, 255, static_cast<int>(190.0f * info_a)),
                 engine_line.c_str());
@@ -1968,8 +2024,10 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
         } else if (hint && hint->checked) {
             update_value = "Al día";
         }
-        choices.push_back({"Actualizar fork desde su GitHub", update_value, 1,
-                           hint && (hint->available || hint->missing)});
+        if (!game.ps3) {
+            choices.push_back({"Actualizar fork desde su GitHub", update_value, 1,
+                               hint && (hint->available || hint->missing)});
+        }
         if (!game.external) {
             choices.push_back({"Ajustes del juego", "", 2, false});
         }
@@ -2072,10 +2130,20 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
     {
         ImGui::SetWindowFontScale(s * 0.38f);
         std::vector<std::pair<Menu::PadButton, const char*>> hints{
-            {Menu::PadButton::Confirm, "Jugar"}, {Menu::PadButton::Action, "Actualizar"}};
+            {Menu::PadButton::Confirm, "Jugar"}};
+        if (!game.ps3) {
+            hints.push_back({Menu::PadButton::Action, "Actualizar"});
+        }
         hints.push_back({Menu::PadButton::Options, "Opciones"});
-        if (!lists[1 - home.tab].empty()) {
-            hints.push_back({Menu::PadButton::Shoulders, "PS4 / PS5"});
+        std::string consoles;
+        for (int t = 0; t < static_cast<int>(lists.size()); ++t) {
+            if (!lists[t].empty()) {
+                consoles += (consoles.empty() ? "" : " / ");
+                consoles += t == 0 ? "PS4" : t == 1 ? "PS5" : "PS3";
+            }
+        }
+        if (next_tab(home.tab, 1, true) != home.tab) {
+            hints.push_back({Menu::PadButton::Shoulders, consoles.c_str()});
         }
         // Circle: back one place; on the games row, twice in a row to leave ForkStation.
         hints.push_back({Menu::PadButton::Back, home.zone == 1 ? "Salir" : "Atrás"});
@@ -2083,7 +2151,9 @@ void DrawHome(int& settingsFor, int& updateFor, bool& openAbout) {
     }
     ImGui::SetWindowFontScale(s);
 
-    if (play) {
+    if (play && game.ps3) {
+        ps3Launch = chosen;
+    } else if (play) {
         done = true;
         Core::FileSys::MntPoints::ignore_game_patches =
             ImGui::IsKeyDown(ImGuiKey::ImGuiKey_LeftCtrl);
@@ -2441,6 +2511,28 @@ void Launch(char* executableName, bool sameProcess) {
             if (event.type == SDL_EVENT_QUIT) {
                 done = true;
             }
+        }
+
+        // A PS3 port: this window steps aside until it ends. What was pressed while playing is
+        // not for this screen.
+        if (ps3Launch >= 0) {
+            const int index = std::exchange(ps3Launch, -1);
+            if (index < static_cast<int>(gameIcons.size())) {
+                const auto& icon = gameIcons[index];
+                SDL_SetWindowFullscreen(window, false);
+                SDL_HideWindow(window);
+                SDL_SyncWindow(window);
+                Common::RunPs3Game(
+                    {icon.serial, icon.title, icon.ebootPath, icon.artFolder, icon.ps3Kind});
+                SDL_ShowWindow(window);
+                SDL_PumpEvents();
+                SDL_FlushEvents(SDL_EVENT_KEY_DOWN, SDL_EVENT_KEY_UP);
+                SDL_FlushEvents(SDL_EVENT_MOUSE_MOTION, SDL_EVENT_MOUSE_WHEEL);
+                SDL_FlushEvents(SDL_EVENT_GAMEPAD_AXIS_MOTION, SDL_EVENT_GAMEPAD_BUTTON_UP);
+                ImGui::GetIO().ClearInputKeys();
+                TakeTheScreen(window);
+            }
+            continue;
         }
 
         // Circle on the games row: the same menu as the resolution choice, to go back to

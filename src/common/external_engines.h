@@ -143,6 +143,25 @@ void RefreshRetroBatForkOptions();
 std::string ExternalEngineResolution(const std::string& serial);
 std::string CycleExternalEngineResolution(const std::string& serial);
 
+/// A PS3 game with a native PC port: juegos_ps3.ini next to the executable, one per line:
+///   SERIAL = Title | port's launcher | game folder holding ICON0.PNG and PIC1.PNG | kind
+/// The last two are optional. Relative paths are from the executable's folder. Lines whose
+/// launcher is missing are skipped. Kinds:
+///   ascension  God of War: Ascension's port: asks for the resolution, writes it, the best quality
+///              and the disc's folder into the port's settings.json, and runs it with --play
+///              (without its window). Any other kind just opens the launcher.
+struct Ps3Game {
+    std::string serial;
+    std::string title;
+    std::filesystem::path program;
+    std::filesystem::path art_folder;
+    std::string kind;
+};
+std::vector<Ps3Game> ReadPs3Games();
+
+/// Starts a PS3 game's port from its own folder and returns once it has ended.
+bool RunPs3Game(const Ps3Game& game);
+
 /// Starts the game on its program, if it has one there. While that program prepares the game a
 /// small window says so; this returns once the program and everything it started have ended, so
 /// front ends such as RetroBat wait for the game. Returns false if the game runs here.
